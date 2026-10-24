@@ -7,8 +7,9 @@
 #
 # Requires macOS with Swift 5.9+, microphone permission on first use, and
 # DEEPGRAM_API_KEY in the environment or this home's gitignored .env. The global
-# hotkeys and typing dictated text into other apps also need the Accessibility
-# permission, and screenshots the Screen Recording permission. Sending dictation
+# hotkeys (and the Right Command + Right Option + Right Shift chord that shows
+# the otherwise hidden floater) and typing dictated text into other apps also
+# need the Accessibility permission, and screenshots the Screen Recording permission. Sending dictation
 # typed into the Firstmate chat needs the Automation permission for Terminal,
 # asked on first use.
 # See docs/desk-floater.md.

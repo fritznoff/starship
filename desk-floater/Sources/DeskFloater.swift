@@ -39,7 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let model = FloaterModel(repoRoot: location.root, fmHome: location.home)
         let panel = FloaterPanel(model: model)
-        panel.orderFrontRegardless()
         self.panel = panel
 
         let hotkeys = HotkeyMonitor()
@@ -48,10 +47,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.onTalkChord = { [weak model] in model?.hotkeyTalkChorded() }
         hotkeys.onDictateTap = { [weak model] in model?.toggleDictation() }
         hotkeys.onShotTap = { [weak model] in model?.takeShot() }
+        hotkeys.onChord = { [weak model] in model?.toggleActive() }
         hotkeys.onTrustChanged = { [weak model] trusted in model?.keysTrusted = trusted }
         model.onFixKeys = { [weak hotkeys] in hotkeys?.requestAccess() }
         hotkeys.start()
         self.hotkeys = hotkeys
+        // The floater starts out of sight: only the activation chord, or a
+        // missing Accessibility grant that leaves the chord unreadable, shows it.
+        model.onActiveChanged = { [weak hotkeys] active in hotkeys?.hotkeysEnabled = active }
+        model.onShownChanged = { [weak panel] shown in
+            if shown {
+                panel?.orderFrontRegardless()
+            } else {
+                TipWindow.shared.hide()
+                panel?.orderOut(nil)
+            }
+        }
+        model.refreshShown()
 
         let screen = ScreenAccess()
         screen.onChanged = { [weak model] granted in model?.screenTrusted = granted }
@@ -60,9 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.screen = screen
         model.refreshMute()
         model.recoverRecordings()
-        DispatchQueue.main.async {
-            model.warmMicrophone()
-        }
     }
 }
 
@@ -108,6 +117,8 @@ enum HomeLocation {
 }
 
 final class FloaterPanel: NSPanel {
+    private weak var model: FloaterModel?
+
     @MainActor
     init(model: FloaterModel) {
         let mover = WindowMover()
@@ -123,6 +134,7 @@ final class FloaterPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
+        self.model = model
         self.contentView = hosting
         self.isFloatingPanel = true
         // Clicking a control must never take keyboard focus from the app the
@@ -143,6 +155,18 @@ final class FloaterPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
+
+    /// A click anywhere on the floater counts as using it.
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            model?.noteUse()
+            TipWindow.shared.hide()
+        default:
+            break
+        }
+        super.sendEvent(event)
+    }
 }
 
 /// Moves the floater with the pointer while its backing plate is dragged, and
@@ -322,9 +346,67 @@ struct TalkKey {
     }
 }
 
+/// Right Command, Right Option and Right Shift held down together: the chord
+/// that activates the floater and, pressed again, deactivates it. Only the
+/// right-hand keys count, by their device-dependent modifier bits.
+struct ActivationChord {
+    static let bits: UInt = 0x10 | 0x40 | 0x04
+    private(set) var held = false
+
+    /// Feeds the modifier flags after a change; true once as the third key goes
+    /// down. The chord only fires again after all three have been let go, and
+    /// `held` stays true until then so its keys do nothing else meanwhile.
+    mutating func update(flags: UInt) -> Bool {
+        let down = flags & Self.bits
+        if down == 0 {
+            held = false
+        } else if down == Self.bits && !held {
+            held = true
+            return true
+        }
+        return false
+    }
+}
+
+/// Whether the floater is active: out of sight and ignoring every hotkey until
+/// the chord, and back to that after `idleLimit` without use. A capture or a
+/// message waiting to go counts as use, so it never switches off under them.
+struct Activation {
+    static let idleLimit: TimeInterval = 120
+
+    private(set) var isActive = false
+    private var lastUse = Date.distantPast
+
+    /// The chord: the new state.
+    mutating func toggle(at now: Date) -> Bool {
+        isActive.toggle()
+        lastUse = now
+        return isActive
+    }
+
+    mutating func used(at now: Date) {
+        guard isActive else { return }
+        lastUse = max(lastUse, now)
+    }
+
+    /// Checks the idle time; true when it just switched the floater off. While
+    /// `busy` the wait restarts, so it begins once the work has finished.
+    mutating func tick(at now: Date, busy: Bool) -> Bool {
+        guard isActive else { return false }
+        if busy {
+            lastUse = max(lastUse, now)
+            return false
+        }
+        guard now.timeIntervalSince(lastUse) >= Self.idleLimit else { return false }
+        isActive = false
+        return true
+    }
+}
+
 /// Global keys: Right Option held is push-to-talk to Firstmate, a lone tap of
 /// Right Command starts or finishes dictation, and a lone tap of Right Shift
-/// away from typing takes a screenshot. Watching keys in other apps, and typing the dictated text
+/// away from typing takes a screenshot, but only while `hotkeysEnabled`: the
+/// three right-hand keys together switch that on and off. Watching keys in other apps, and typing the dictated text
 /// into them, both need the Accessibility permission. macOS ties that grant to
 /// the app's signature, so an ad-hoc signed rebuild is untrusted again: it asks
 /// once per build, and the keys-off badge asks again on demand.
@@ -335,7 +417,10 @@ final class HotkeyMonitor {
     var onTalkChord: (() -> Void)?
     var onDictateTap: (() -> Void)?
     var onShotTap: (() -> Void)?
+    var onChord: (() -> Void)?
     var onTrustChanged: ((Bool) -> Void)?
+    /// The hotkeys act only while this is on; the activation chord always does.
+    var hotkeysEnabled = false
 
     private static let rightOptionKey: UInt16 = 61
     // Device-dependent modifier bit that tells the right-hand key from the left.
@@ -349,6 +434,7 @@ final class HotkeyMonitor {
     private var talkKey = TalkKey()
     private var dictateKey = TapKey.rightCommand
     private var shotKey = TapKey.rightShift
+    private var chord = ActivationChord()
 
     func start() {
         let defaults = UserDefaults.standard
@@ -423,6 +509,15 @@ final class HotkeyMonitor {
     }
 
     private func handle(_ event: NSEvent) {
+        if event.type == .flagsChanged && chord.update(flags: event.modifierFlags.rawValue) {
+            // Whatever the first keys of the chord began is dropped with it.
+            talkKey = TalkKey()
+            dictateKey = TapKey.rightCommand
+            shotKey = TapKey.rightShift
+            onChord?()
+            return
+        }
+        guard hotkeysEnabled, !chord.held else { return }
         let at = TapKey.time(of: event)
         if event.type != .flagsChanged {
             // A key or click while a hotkey is held makes it a shortcut, not a
@@ -714,6 +809,167 @@ enum VoiceVolume {
     }
 }
 
+/// A small tip beside the pointer, shown once it has rested on a control for
+/// `delay`. macOS's own tooltips need the app to be active, which this
+/// floater, a non-activating panel, never is, so it draws its own.
+@MainActor
+final class TipWindow {
+    static let shared = TipWindow()
+    static let delay: TimeInterval = 0.7
+
+    private let panel: NSPanel
+    private let label: NSTextField
+    private var generation = 0
+
+    private init() {
+        label = NSTextField(wrappingLabelWithString: "")
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .white
+        label.preferredMaxLayoutWidth = 220
+        let box = NSView()
+        box.wantsLayer = true
+        box.layer?.backgroundColor = NSColor(white: 0.1, alpha: 0.94).cgColor
+        box.layer?.cornerRadius = 5
+        box.addSubview(label)
+        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: true)
+        panel.contentView = box
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    }
+
+    /// The pointer entered (`inside`) or left a control whose tip is `text`.
+    func hover(_ text: String, inside: Bool) {
+        hide()
+        guard inside else { return }
+        let mine = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.delay) { [self] in
+            if generation == mine {
+                show(text)
+            }
+        }
+    }
+
+    /// Hides the tip and cancels one still waiting: on a click, or when the
+    /// floater goes out of sight.
+    func hide() {
+        generation += 1
+        panel.orderOut(nil)
+    }
+
+    private func show(_ text: String) {
+        label.stringValue = text
+        let size = label.fittingSize
+        let inset: CGFloat = 6
+        label.frame = NSRect(x: inset, y: inset, width: size.width, height: size.height)
+        let box = NSSize(width: size.width + inset * 2, height: size.height + inset * 2)
+        let mouse = NSEvent.mouseLocation
+        let visible = NSScreen.screens.first { $0.frame.contains(mouse) }?.visibleFrame
+            ?? NSScreen.main?.visibleFrame ?? .zero
+        var origin = NSPoint(x: mouse.x - box.width / 2, y: mouse.y - box.height - 18)
+        if origin.y < visible.minY {
+            origin.y = mouse.y + 18
+        }
+        origin.x = max(min(origin.x, visible.maxX - box.width), visible.minX)
+        panel.setFrame(NSRect(origin: origin, size: box), display: true)
+        panel.orderFrontRegardless()
+    }
+}
+
+extension View {
+    /// A tip after the pointer rests here (see TipWindow).
+    func tip(_ text: String) -> some View {
+        onHover { inside in
+            TipWindow.shared.hover(text, inside: inside)
+        }
+    }
+}
+
+/// Moves the floater when dragged, shows the four-way move cursor and a tip.
+/// Every other part of the floater also drags it; this is the spot that is
+/// only for that, away from the buttons.
+final class GripView: NSView {
+    var mover: WindowMover?
+    static let help = "Drag to move the floater"
+
+    /// The system's four-way arrows symbol drawn as a cursor, black with a white
+    /// edge so it shows on any background; the open hand if the symbol is missing.
+    static let cursor: NSCursor = {
+        let name = "arrow.up.and.down.and.arrow.left.and.right"
+        let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .bold)
+        func tinted(_ color: NSColor) -> NSImage? {
+            NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(config.applying(.init(paletteColors: [color])))
+        }
+        guard let black = tinted(.black), let white = tinted(.white) else { return .openHand }
+        let size = NSSize(width: black.size.width + 4, height: black.size.height + 4)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let spot = NSRect(x: 2, y: 2, width: black.size.width, height: black.size.height)
+            for (dx, dy) in [(-1.0, 0.0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
+                white.draw(in: spot.offsetBy(dx: dx, dy: dy))
+            }
+            black.draw(in: spot)
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: size.width / 2, y: size.height / 2))
+    }()
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.cursorUpdate, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        Self.cursor.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        Self.cursor.set()
+        TipWindow.shared.hover(Self.help, inside: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+        TipWindow.shared.hover(Self.help, inside: false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        TipWindow.shared.hide()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        Self.cursor.set()
+        mover?.drag()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        mover?.end()
+    }
+}
+
+struct GripCatcher: NSViewRepresentable {
+    let mover: WindowMover
+
+    func makeNSView(context: Context) -> GripView {
+        GripView()
+    }
+
+    func updateNSView(_ view: GripView, context: Context) {
+        view.mover = mover
+    }
+}
+
 /// What a click on the speaker button does: a plain click mutes or unmutes,
 /// while a right-click or a Control-click - the Mac's secondary click - opens
 /// the voice-volume control.
@@ -739,8 +995,27 @@ enum SpeakerClick: Equatable {
 final class SpeakerClickView: NSView {
     var onMute: (() -> Void)?
     var onVolume: (() -> Void)?
+    var help = ""
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        TipWindow.shared.hover(help, inside: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        TipWindow.shared.hover(help, inside: false)
+    }
 
     override func mouseDown(with event: NSEvent) {
         dispatch(event)
@@ -773,7 +1048,7 @@ struct SpeakerClickCatcher: NSViewRepresentable {
     func updateNSView(_ view: SpeakerClickView, context: Context) {
         view.onMute = onMute
         view.onVolume = onVolume
-        view.toolTip = help
+        view.help = help
     }
 }
 
@@ -815,6 +1090,7 @@ final class FloaterModel: ObservableObject {
             if mode == .idle {
                 status = idleStatus
             }
+            refreshShown()
         }
     }
     @Published var screenTrusted = false
@@ -835,6 +1111,12 @@ final class FloaterModel: ObservableObject {
     private var fromHotkey = false
     private let tapWindow: TimeInterval = 0.3
     private var muteTimer: Timer?
+
+    private var activation = Activation()
+    private var idleTimer: Timer?
+    private var shown = false
+    // Messages sent to Firstmate and not yet answered by the send script.
+    private var deliveries = 0
 
     // Screenshots stack until the captain stops taking them, then go to
     // Firstmate as one message. A talk-to-Firstmate message recorded or
@@ -859,6 +1141,69 @@ final class FloaterModel: ObservableObject {
                     self?.refreshRecent()
                 }
             }
+        }
+    }
+
+    // MARK: activation (the chord of the three right-hand keys)
+
+    /// Called when the hotkeys are switched on or off.
+    var onActiveChanged: ((Bool) -> Void)?
+    /// Called when the floater should appear or disappear.
+    var onShownChanged: ((Bool) -> Void)?
+
+    /// Without the Accessibility permission the chord cannot be read, so the
+    /// floater stays in sight for the captain to grant it.
+    private var wantsShown: Bool {
+        activation.isActive || !keysTrusted
+    }
+
+    func refreshShown() {
+        let now = wantsShown
+        guard now != shown else { return }
+        shown = now
+        onShownChanged?(now)
+        if now {
+            // The capture engine is built when the floater appears rather than
+            // at launch, so the first words after the chord are still kept.
+            DispatchQueue.main.async { self.warmMicrophone() }
+        }
+    }
+
+    func toggleActive() {
+        let active = activation.toggle(at: Date())
+        if active {
+            idleTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.idleTick() }
+            }
+        } else {
+            deactivated()
+        }
+        onActiveChanged?(active)
+        refreshShown()
+    }
+
+    /// Any use of the floater restarts the idle wait.
+    func noteUse() {
+        activation.used(at: Date())
+    }
+
+    private func idleTick() {
+        guard activation.tick(at: Date(), busy: isBusy) else { return }
+        deactivated()
+        onActiveChanged?(false)
+        refreshShown()
+    }
+
+    /// Something is still under way that the floater must not switch off under.
+    private var isBusy: Bool {
+        mode != .idle || !stack.isEmpty || deliveries > 0 || !retrying.isEmpty
+    }
+
+    private func deactivated() {
+        idleTimer?.invalidate()
+        idleTimer = nil
+        if mode == .starting || mode == .recording {
+            cancelCapture()
         }
     }
 
@@ -900,6 +1245,7 @@ final class FloaterModel: ObservableObject {
 
     /// Captures the display under the pointer and adds it to the stack.
     func takeShot() {
+        noteUse()
         guard screenTrusted else {
             flash("Screen off - click !")
             return
@@ -963,6 +1309,7 @@ final class FloaterModel: ObservableObject {
                 status = images.count == 1 ? "Sending 1 shot…" : "Sending \(images.count) shots…"
             }
         }
+        deliveries += 1
         Task.detached(priority: .userInitiated) { [repoRoot, fmHome] in
             let outcome = Self.deliver(repoRoot: repoRoot, fmHome: fmHome, text: text, images: images)
             await MainActor.run {
@@ -975,6 +1322,8 @@ final class FloaterModel: ObservableObject {
     /// are removed once the words are delivered, and kept to be tried again
     /// when they were not.
     private func delivered(_ outcome: String?, audio: [URL], finishing: Bool = false) {
+        deliveries -= 1
+        noteUse()
         guard outcome != nil || audio.isEmpty else {
             for url in audio {
                 keepForRetry(url, purpose: .firstmate, reason: "delivery failed", finishing: finishing)
@@ -998,6 +1347,7 @@ final class FloaterModel: ObservableObject {
     private func voiceTranscribed(_ text: String, audio: URL) {
         guard stack.hold(text) else {
             status = "Delivering…"
+            deliveries += 1
             Task.detached(priority: .userInitiated) { [repoRoot, fmHome] in
                 let outcome = Self.deliver(repoRoot: repoRoot, fmHome: fmHome, text: text, images: [])
                 await MainActor.run {
@@ -1068,6 +1418,7 @@ final class FloaterModel: ObservableObject {
     // MARK: Right Option (hold to talk to Firstmate)
 
     func hotkeyTalkBegan() {
+        noteUse()
         guard mode == .idle else { return }
         begin(.firstmate)
         fromHotkey = true
@@ -1075,6 +1426,7 @@ final class FloaterModel: ObservableObject {
     }
 
     func hotkeyTalkEnded() {
+        noteUse()
         guard fromHotkey else { return }
         let quick = pressStartedAt.map { Date().timeIntervalSince($0) < tapWindow } ?? true
         switch mode {
@@ -1100,6 +1452,7 @@ final class FloaterModel: ObservableObject {
     // MARK: dictation (a tap of Right Command)
 
     func toggleDictation() {
+        noteUse()
         switch mode {
         case .idle:
             begin(.dictate)
@@ -1654,6 +2007,20 @@ struct FloaterView: View {
     private let arrowWidth: CGFloat = 12
     /// The status line is as wide as the row of controls above it, so the bubble
     /// has no empty strip beside them.
+    private let gripSize: CGFloat = 14
+    private var expanded: Bool { model.showingVolume || model.showingRecent }
+
+    /// The move handle in the bottom-right corner: in the status line's row,
+    /// or in a row of its own below an open list.
+    private var grip: some View {
+        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(.white.opacity(0.6))
+            .frame(width: gripSize, height: gripSize)
+            .overlay { GripCatcher(mover: mover) }
+            .accessibilityLabel(GripView.help)
+    }
+
     private var rowWidth: CGFloat {
         mainSize + rowSpacing + controlSize * 2 + controlSpacing + rowSpacing + arrowWidth
     }
@@ -1664,8 +2031,8 @@ struct FloaterView: View {
                 mainButton
                 VStack(spacing: controlSpacing) {
                     HStack(spacing: controlSpacing) {
-                        control("stop.fill", help: "Stop talking", action: model.stopTalking)
-                        control("arrow.counterclockwise", help: "Repeat the last reply", action: model.repeatLast)
+                        control("stop.fill", help: "Stop the spoken reply", action: model.stopTalking)
+                        control("arrow.counterclockwise", help: "Repeat the last spoken reply", action: model.repeatLast)
                     }
                     HStack(spacing: controlSpacing) {
                         speakerButton
@@ -1674,19 +2041,27 @@ struct FloaterView: View {
                 }
                 recentToggle
             }
-            Text(model.status)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(keysOffIdle ? Color(red: 1.0, green: 0.72, blue: 0.35) : Color.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .truncationMode(.tail)
-                .frame(width: rowWidth)
-                .allowsHitTesting(false)
+            HStack(spacing: 0) {
+                Text(model.status)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(keysOffIdle ? Color(red: 1.0, green: 0.72, blue: 0.35) : Color.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .truncationMode(.tail)
+                    .frame(width: expanded ? rowWidth : rowWidth - gripSize)
+                    .allowsHitTesting(false)
+                if !expanded {
+                    grip
+                }
+            }
             if model.showingVolume {
                 volumeControl
             }
             if model.showingRecent {
                 recentList
+            }
+            if expanded {
+                grip
             }
         }
         .padding(6)
@@ -1712,8 +2087,8 @@ struct FloaterView: View {
     /// control below the row.
     private var speakerButton: some View {
         let help = model.muted
-            ? "Voice muted - click to unmute; right-click for voice volume"
-            : "Mute voice; right-click or Control-click for voice volume"
+            ? "Unmute voice - right-click for volume"
+            : "Mute voice - right-click for volume"
         return control(
             model.muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
             help: help,
@@ -1760,7 +2135,7 @@ struct FloaterView: View {
                     Button("Reset") { model.setVoiceVolume(VoiceVolume.standard) }
                         .buttonStyle(.plain)
                         .font(.system(size: 8, weight: .semibold))
-                        .help("Back to the system volume (100%)")
+                        .tip("Back to the system volume (100%)")
                 }
             }
         }
@@ -1783,7 +2158,7 @@ struct FloaterView: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(model.showingRecent ? "Hide recent replies" : "Recent replies - click one to hear it again")
+        .tip(model.showingRecent ? "Hide recent replies" : "Recent replies - click one to hear it again")
         .accessibilityLabel(model.showingRecent ? "Hide recent replies" : "Show recent replies")
     }
 
@@ -1819,7 +2194,7 @@ struct FloaterView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(reply.text)
+                .tip(reply.text)
                 .accessibilityLabel("Hear again: \(reply.text)")
             }
         }
@@ -1856,7 +2231,7 @@ struct FloaterView: View {
         control(
             "camera.fill",
             help: model.screenTrusted
-                ? "Screenshot to Firstmate (or tap Right Shift); shots taken close together are sent as one message"
+                ? "Take a screenshot for Firstmate - shots close together go as one message"
                 : "Screenshots are off: macOS has not allowed this build Screen Recording. Click to allow it.",
             action: model.shotButton
         )
@@ -1901,7 +2276,7 @@ struct FloaterView: View {
         .onTapGesture(count: 2) {
             model.toggle()
         }
-        .help("Hold to talk to Firstmate, or click to start and click again to send (or hold Right Option)")
+        .tip("Talk to Firstmate - hold, or click to start and click again to send")
         .accessibilityLabel("Desk push to talk")
         .overlay(alignment: .topTrailing) {
             if !model.keysTrusted {
@@ -1923,7 +2298,7 @@ struct FloaterView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help("Hotkeys are off: macOS has not allowed this build Accessibility. Click to allow it.")
+        .tip("Hotkeys are off: macOS has not allowed this build Accessibility. Click to allow it.")
         .accessibilityLabel("Hotkeys off - allow Accessibility")
     }
 
@@ -1937,7 +2312,7 @@ struct FloaterView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help(help)
+        .tip(help)
         .accessibilityLabel(help)
     }
 

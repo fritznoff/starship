@@ -14,6 +14,7 @@ Exactly one fleet brain remains: the primary already running in this home.
 
 - Always-on-top, draggable floating control (SwiftUI): a small talk button with four smaller controls beside it, and a dropdown arrow for recent replies.
 - Push-to-talk (hold or click-to-toggle), or hold Right Option anywhere. Not always-listening. No wake word.
+- Out of sight until you ask for it: it starts hidden and ignores every hotkey until you press the [activation chord](#activating-the-floater).
 - Speech-to-text via Deepgram (`bin/fm-deepgram-stt.sh`).
 - Transcripts typed straight into the primary Firstmate chat and submitted, with a durable mailbox under the home (`state/desk-voice/inbox/`) as the fallback.
 - No length limit on a message, and no recording lost: one that cannot be transcribed or delivered is saved and tried again (see [Recordings are never lost](#recordings-are-never-lost)).
@@ -47,12 +48,26 @@ Exactly one fleet brain remains: the primary already running in this home.
    Grant microphone permission when macOS asks.
    macOS also asks for the Accessibility and Screen Recording permissions (see [Permissions](#permissions)); the buttons work without Accessibility, the hotkeys and typing into other apps do not, and screenshots need Screen Recording.
 
-4. Hold the button (or click to toggle), speak, release.
+4. Press Right Command, Right Option and Right Shift together to bring the floater up (see [Activating the floater](#activating-the-floater)), then hold the button (or click to toggle), speak, release.
    The transcript is typed into the primary Firstmate chat and submitted, or saved to the mailbox when that chat cannot be reached.
+
+## Activating the floater
+
+The floater starts hidden, and while it is hidden none of the hotkeys below do anything.
+Press Right Command, Right Option and Right Shift together, all three right-hand keys at once, and it appears; from then on the hotkeys work.
+Press the same chord again and it disappears and the hotkeys go quiet again.
+The left-hand keys never count, and pressing the chord never starts a recording, dictation or screenshot, whichever of the three keys you press first.
+If a capture had just begun as the first key of the chord went down, it is dropped without sending anything.
+
+It also switches itself off after two minutes without use. Use means the chord, any hotkey, a click on the floater, and any recording, dictation, screenshot or message still being sent or waiting to be sent or retried; it never switches off under those, and the two minutes start again when they finish. Sending a message does not hide it.
+Without the Accessibility permission the chord cannot be read, so the floater stays in sight (with its "!" badge, see [Permissions](#permissions)) until the permission is granted, and then hides.
+The microphone is made ready when the floater appears, not at launch, so the first words after the chord are kept.
 
 ## Controls
 
-Drag the floater by its dark backing plate or the status line under the buttons.
+Drag the floater by its dark backing plate, the status line under the buttons, or the move handle (four small arrows) in its bottom-right corner.
+The handle is only for dragging, clear of every button, and the pointer turns into the four-way move cursor over it.
+Every button waits for the pointer to rest on it for a moment and then shows a short tip saying what it does.
 
 | Control | What it does |
 | --- | --- |
@@ -77,7 +92,7 @@ The reply keeps playing, and it stays out of your message: the floater records w
 macOS always lowers other audio a little while voice processing records; the floater sets that to the minimum, applied only while you are actually speaking, so a reply may dip briefly but is never paused or stopped.
 When the Mac's sound output is a Multi-Output Device or a virtual device such as BlackHole, voice processing listens against the Mac's built-in speakers instead.
 macOS cannot use a Multi-Output Device for it and picks a device inside it, and against a virtual device it leaves a MacBook's built-in microphone unboosted, so the recording would come out near silent.
-Recording starts the moment you press: once the microphone is allowed, the floater gets it ready when it opens and again after your audio devices change, so your first words are kept.
+Recording starts the moment you press: once the microphone is allowed, the floater gets it ready when it appears and again after your audio devices change, so your first words are kept.
 After you release, it keeps listening for a moment, so a last word still being spoken is not cut off.
 `desk-floater/Sources/VoiceCapture.swift` owns the capture.
 
@@ -89,6 +104,7 @@ After you release, it keeps listening for a moment, so a last word still being s
 | Right Command, tapped | Starts dictation; tap it again to finish and type the text, or send it when the cursor is in the Firstmate chat. |
 | Right Shift, tapped while you are not typing | Takes a screenshot of the display under the mouse pointer. See [Screenshots](#screenshots). |
 
+These work only while the floater is [active](#activating-the-floater).
 Only the right-hand keys are watched, so the left Option, Command and Shift keys keep working as usual.
 Right Shift follows the same tap rules as Right Command: held with a letter to type a capital, or held longer than half a second, it is an ordinary Shift press and takes no screenshot.
 It also takes no screenshot while you are typing, so a Shift brushed on the way to a capital, a question mark or Return is ignored: a tap within a second and a half of your last key, or followed by a key within half a second, counts as typing.
@@ -160,7 +176,7 @@ Nothing is sent anywhere but to this home's Firstmate.
 | Permission | Needed for | Where |
 | --- | --- | --- |
 | Microphone | Every capture | Asked the first time you talk. |
-| Accessibility | The Right Option, Right Command and Right Shift hotkeys, and pasting dictated text into other apps | Asked on the first launch. Grant it in System Settings, Privacy & Security, Accessibility, by switching on DeskFloater. |
+| Accessibility | The activation chord, the Right Option, Right Command and Right Shift hotkeys, and pasting dictated text into other apps | Asked on the first launch. Grant it in System Settings, Privacy & Security, Accessibility, by switching on DeskFloater. |
 | Screen Recording | Screenshots | Asked on the first launch. Grant it in System Settings, Privacy & Security, Screen & System Audio Recording, by switching on DeskFloater. |
 | Automation (Terminal) | Sending dictation typed into the Firstmate chat | Asked the first time you dictate with Terminal in front. Grant it in System Settings, Privacy & Security, Automation, by switching on Terminal under DeskFloater. |
 
