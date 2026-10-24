@@ -70,6 +70,7 @@ There is no auto-update; use `brew upgrade --cask starship-floater` after a new 
 
 Launching with `bin/fm-desk-floater.sh` selects the installed app when present and saves the current code folder and `FM_HOME` in the per-user JSON below, so Finder, login items and Quit & Reopen keep serving the same home.
 Each such launch selects that home for future environment-free launches; the file is replaced atomically and is readable only by your user.
+Quit the floater before selecting a different home: macOS does not replace the environment of an already running app.
 It unregisters other copies of the launched identifier and registers the installed app, without modifying or deleting source bundles.
 An invalid installed bundle or failed registration stops the launch rather than falling back to a competing source copy.
 `--build-only` and `--release` remain explicit build operations and never launch or register their bundles.
