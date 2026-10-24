@@ -431,6 +431,29 @@ test_large_tailnet_still_reads() {
   pass "a tailnet dump past the report cap still reads, and the offline Dell is alerted"
 }
 
+test_floater_service_name_and_locations() {
+  python3 - "$TOOL" <<'PYTEST' || fail "Starship Floater service detection failed"
+import importlib.util
+import sys
+from pathlib import Path
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location("machines", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = Path("/test/starship")
+for installed in [root / "desk-floater/.build/Starship Floater.app",
+                  Path("/Applications/Starship Floater.app")]:
+    with patch.object(module.platform, "system", return_value="Darwin"), \
+         patch.object(Path, "is_dir", lambda path: path == installed), \
+         patch.object(module, "_run", return_value=(0, "123\n", "")) as run:
+        check = dict(module.service_checks(root, 1, []))["Starship Floater"]
+        assert check() == {"name": "Starship Floater", "up": True, "detail": "running"}
+        assert run.call_args.args[0] == ["pgrep", "-f", "Starship Floater[.]app/Contents/MacOS/DeskFloater"]
+PYTEST
+  pass "Starship Floater service detects source and Applications installs under its visible name"
+}
+
+test_floater_service_name_and_locations
 test_tailnet_without_config
 test_configured_machines_services_and_probes
 test_unknown_and_unreadable_paths

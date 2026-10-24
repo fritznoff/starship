@@ -448,11 +448,13 @@ def service_checks(root: Path, bridge_port: int, extra: List[Dict[str, str]]) ->
         return _service("Bridge page", up, "serving" if up else f"nothing listening on port {bridge_port}")
 
     def floater() -> Optional[Dict[str, Any]]:
-        if platform.system() != "Darwin" or not (root / "desk-floater" / ".build" / "DeskFloater.app").is_dir():
+        if platform.system() != "Darwin" or not any(app.is_dir() for app in (
+            root / "desk-floater" / ".build" / "Starship Floater.app", Path("/Applications/Starship Floater.app")
+        )):
             return None
-        rc, out, _err = _run(["pgrep", "-f", "DeskFloater.app/Contents/MacOS/DeskFloater"], SERVICE_TIMEOUT_SECONDS)
+        rc, out, _err = _run(["pgrep", "-f", "Starship Floater[.]app/Contents/MacOS/DeskFloater"], SERVICE_TIMEOUT_SECONDS)
         up = rc == 0 and bool(out.strip())
-        return _service("Desk floater", up, "running" if up else "not running")
+        return _service("Starship Floater", up, "running" if up else "not running")
 
     def configured(entry: Dict[str, str]) -> Dict[str, Any]:
         status, _latency, error = _http_status(entry["url"], SERVICE_TIMEOUT_SECONDS)
@@ -461,7 +463,7 @@ def service_checks(root: Path, bridge_port: int, extra: List[Dict[str, str]]) ->
 
     checks: List[Tuple[str, Callable[[], Optional[Dict[str, Any]]]]] = [
         ("Bridge page", bridge),
-        ("Desk floater", floater),
+        ("Starship Floater", floater),
     ]
     checks.extend((entry["name"], lambda entry=entry: configured(entry)) for entry in extra)
     return checks

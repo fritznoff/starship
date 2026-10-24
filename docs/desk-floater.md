@@ -1,4 +1,4 @@
-# Desk floater (Deepgram ears + mouth)
+# Starship Floater (Deepgram ears + mouth)
 
 A Mac-native always-on-top push-to-talk control for **this** Firstmate home.
 It recreates the *feel* of a floating desk mic without depending on the
@@ -50,6 +50,46 @@ Exactly one fleet brain remains: the primary already running in this home.
 
 4. Press Right Command, Right Option and Right Shift together (the default activation shortcut) to bring the floater up (see [Activating the floater](#activating-the-floater)), then hold the button (or click to toggle), speak, release.
    The transcript is typed into the primary Firstmate chat and submitted, or saved to the mailbox when that chat cannot be reached.
+
+## Prebuilt Homebrew app
+
+The private-Mac distribution uses the public `fritznoff/starship` fork's GitHub releases and the `fritznoff/starship` Homebrew tap (repository `fritznoff/homebrew-starship`).
+After the release and tap are published:
+
+```sh
+brew install --cask fritznoff/starship/starship-floater
+```
+
+Homebrew installs `Starship Floater.app` in `/Applications` by default.
+The initial cask supports Apple Silicon and macOS 14 or newer; it does not install Firstmate's scripts or their dependencies.
+Keep a separate Firstmate installation available on disk.
+The app is Apple Development-signed, not Developer ID-signed or notarized.
+The cask deliberately clears quarantine from this app only, bypassing Gatekeeper's downloaded-app check; install it only if you trust the release publisher.
+Accessibility, Microphone, Screen Recording and Terminal Automation permissions still apply.
+There is no auto-update; use `brew upgrade --cask starship-floater` after a new cask version is published.
+
+Finder and login items do not inherit shell exports.
+Create `~/Library/Application Support/Firstmate/desk-floater.json` with absolute paths before opening the installed app:
+
+```json
+{
+  "root": "/Users/you/starship",
+  "home": "/Users/you/starship"
+}
+```
+
+`root` is the Firstmate code folder containing executable `bin/fm-desk-voice.sh`; `home` is its private operational home and defaults to `root` when omitted.
+For a separate operational home, set `home` to that directory instead.
+Put `DEEPGRAM_API_KEY` in that home's gitignored `.env`, not in this JSON file.
+The app reads this file only when it cannot locate scripts from the launch environment, its in-repository bundle location, or its current directory.
+Explicit `FM_DESK_FLOATER_ROOT` and `FM_HOME` still take precedence; `FM_HOME` alone also locates scripts when it points to a code folder.
+Invalid or absent configuration leaves the app with an explanatory alert instead of guessing a home.
+Script subprocesses retain the inherited `PATH`, with `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin` appended so Finder launches can find Homebrew and user-installed helpers.
+Restart the app after changing its configuration.
+
+To prepare a release without launching or registering another copy, use `bin/fm-desk-floater.sh --release VERSION OUTPUT_DIR` (see its `--help` for the exact build, signing and archive contract).
+Update the tap's cask version and sha256 from that command's output, publish the zip on the fork's matching `starship-floater-vVERSION` release, and publish the cask only after its asset is available.
+Keep release assets immutable: a changed build gets a new version rather than replacing a zip that an installed cask already checks by hash.
 
 ## Activating the floater
 
@@ -216,16 +256,19 @@ To use another certificate, put its name or SHA-1 hash on one line in this home'
 If that certificate is missing, expired or fails to sign, the launcher says so and falls back to the "Apple Development" one, then to ad-hoc, and the floater still starts.
 Without a certificate the floater stays ad-hoc signed and the launcher says so: macOS then ties each grant to that one build, every rebuild (after any change to its code) asks again, and the badges come back.
 The first signed build is new to macOS too, so it is asked about once more.
-When a build is asked about while DeskFloater already shows as switched on in that list, switch it off and on again, or remove it with the minus button and open the permissions window to add it back.
+When a build is asked about while Starship Floater already shows as switched on in that list, switch it off and on again, or remove it with the minus button and open the permissions window to add it back.
 
 ### Quit & Reopen
 
 "Quit & Reopen", Finder and a login item start the floater without the home the launcher passes it.
-The floater then finds its home from where it is: the Firstmate folder holding `desk-floater/.build/DeskFloater.app`.
-If it is not inside a Firstmate folder, it says so and quits rather than guessing.
+The floater then finds its home from where it is: the Firstmate folder holding `desk-floater/.build/Starship Floater.app`.
+For an app outside a Firstmate folder, such as `/Applications/Starship Floater.app`, configure the saved paths described under [Prebuilt Homebrew app](#prebuilt-homebrew-app).
+Without a valid location it says so and quits rather than guessing.
 
-macOS can reopen any copy it knows under the app's identifier, so only the floater `bin/fm-desk-floater.sh` launches carries that identifier.
-A copy built with `--build-only`, such as one a worker builds to check a change, goes to its own `desk-floater/.build/DeskFloater-build-only.app` with an identifier of its own and stays ad-hoc signed, so it never changes the floater you launched and macOS never reopens it in place of this home's floater.
+macOS can reopen any copy it knows under the app's identifier.
+The launched source app and the prebuilt release share that identity; quit the source app before switching to the installed app, and open `/Applications/Starship Floater.app` explicitly the first time.
+Use one copy at a time.
+A copy built with `--build-only`, such as one a worker builds to check a change, goes to its own `desk-floater/.build/Starship Floater (test build).app` with an identifier of its own and stays ad-hoc signed, so it never changes the floater you launched and macOS never reopens it in place of this home's floater.
 Each launch also makes macOS forget any other copy it knows under the floater's identifier, such as one built by an older version of the launcher, which takes a few seconds after the floater is already up.
 
 ## How transcripts reach Firstmate

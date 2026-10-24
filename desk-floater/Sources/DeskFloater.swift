@@ -44,12 +44,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             environment: ProcessInfo.processInfo.environment,
             bundlePath: Bundle.main.bundlePath,
             currentDirectory: FileManager.default.currentDirectoryPath,
+            settings: HomeLocation.savedSettings(),
             isCodeRoot: HomeLocation.isCodeRoot
         ) else {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
-            alert.messageText = "DeskFloater cannot find its Firstmate home"
-            alert.informativeText = "Start it with bin/fm-desk-floater.sh in your Firstmate folder."
+            alert.messageText = "Starship Floater cannot find its Firstmate home"
+            alert.informativeText = "Start it with bin/fm-desk-floater.sh in your Firstmate folder, or configure ~/Library/Application Support/Firstmate/desk-floater.json as described in docs/desk-floater.md."
             alert.runModal()
             NSApp.terminate(nil)
             return
@@ -94,16 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Where the floater finds this home's scripts and state. The launcher passes
-/// both; macOS "Quit & Reopen", Finder and login items start the app without
-/// them and in "/", so the code root then comes from the bundle's own place in
-/// the repo, <root>/desk-floater/.build/DeskFloater.app, and the home defaults
-/// to that root as it does in the launcher.
+/// Launcher environment and in-repo bundles take precedence over Finder settings.
 enum HomeLocation {
     static func resolve(
         environment: [String: String],
         bundlePath: String,
         currentDirectory: String,
+        settings: [String: String] = [:],
         isCodeRoot: (String) -> Bool
     ) -> (root: String, home: String)? {
         var root = nonEmpty(environment["FM_DESK_FLOATER_ROOT"])
@@ -119,8 +117,27 @@ enum HomeLocation {
         if root == nil && isCodeRoot(currentDirectory) {
             root = currentDirectory
         }
-        guard let root else { return nil }
-        return (root, nonEmpty(environment["FM_HOME"]) ?? root)
+        var home = nonEmpty(environment["FM_HOME"])
+        if root == nil, let home, isCodeRoot(home) {
+            root = home
+        }
+        if root == nil, let savedRoot = settings["root"], savedRoot.hasPrefix("/"),
+           isCodeRoot(savedRoot) {
+            root = savedRoot
+            home = home ?? nonEmpty(settings["home"])
+        }
+        guard let root, isCodeRoot(root) else { return nil }
+        if let home, !home.hasPrefix("/") { return nil }
+        return (root, home ?? root)
+    }
+
+    static func savedSettings() -> [String: String] {
+        let file = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Firstmate/desk-floater.json")
+        guard let data = try? Data(contentsOf: file),
+              let settings = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return settings
     }
 
     /// A Firstmate code root holds the scripts the floater runs.
@@ -1965,6 +1982,9 @@ final class FloaterModel: ObservableObject {
         proc.executableURL = URL(fileURLWithPath: bin)
         proc.arguments = args
         var environment = ProcessInfo.processInfo.environment
+        // Finder's PATH omits Homebrew and user-installed Firstmate helpers.
+        environment["PATH"] = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+            + ":/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin"
         for (k, v) in env { environment[k] = v }
         proc.environment = environment
         let out = Pipe()

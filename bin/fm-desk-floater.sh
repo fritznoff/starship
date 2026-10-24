@@ -3,6 +3,7 @@
 #
 # Usage:
 #   fm-desk-floater.sh [--build-only]
+#   fm-desk-floater.sh --release VERSION OUTPUT_DIR
 #   fm-desk-floater.sh --help
 #
 # Requires macOS with Swift 5.9+, microphone permission on first use, and
@@ -14,7 +15,7 @@
 # asked on first use.
 # See docs/desk-floater.md.
 #
-# Builds desk-floater/ into a minimal .app under desk-floater/.build/DeskFloater.app
+# Builds desk-floater/ into a minimal .app under desk-floater/.build/Starship Floater.app
 # so TCC microphone prompts have an NSMicrophoneUsageDescription. The bundle
 # carries desk-floater/Resources/AppIcon.icns as its icon, copied in before
 # signing; desk-floater/Resources/make-app-icon.sh regenerates it.
@@ -33,13 +34,21 @@
 #
 # Only the launched app, com.firstmate.desk-floater, carries the identifier
 # macOS reopens by. --build-only, such as a verification build in a task
-# worktree, assembles desk-floater/.build/DeskFloater-build-only.app instead,
+# worktree, assembles desk-floater/.build/Starship Floater (test build).app instead,
 # as com.firstmate.desk-floater.build-only with the linker's ad-hoc signature
 # and no keychain lookup, and prints its path; it never touches the launched
 # app, so "Quit & Reopen", Finder and login items never start it in place of
 # this home's floater. Launching also drops LaunchServices' record of every
 # other copy registered under the launched identifier (a few seconds, after
 # the floater is already up); the files themselves are never touched.
+#
+# --release builds a native-architecture, Apple Development-signed app without
+# launching or registering it. VERSION must be three dot-separated integers.
+# OUTPUT_DIR must be absolute; a new Starship-Floater-VERSION-ARCH.zip is written
+# there (never overwritten), with version and sha256 printed to stdout. ditto
+# archives normalized timestamps without resource forks or extended attributes.
+# Repackaging the same signed app is reproducible; rebuilding is not promised
+# byte-identical across Swift/compiler/SDK or signing-certificate changes.
 #
 # Environment: FM_HOME selects the home whose config/ is read and that the
 # floater serves (default: this code root). FM_DESK_FLOATER_LSREGISTER overrides
@@ -51,8 +60,8 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FM_HOME="${FM_HOME:-$ROOT}"
 PKG="$ROOT/desk-floater"
 RELEASE_BIN="$PKG/.build/release/DeskFloater"
-APP_DIR="$PKG/.build/DeskFloater.app"
-BUILD_ONLY_APP_DIR="$PKG/.build/DeskFloater-build-only.app"
+APP_DIR="$PKG/.build/Starship Floater.app"
+BUILD_ONLY_APP_DIR="$PKG/.build/Starship Floater (test build).app"
 APP_MACOS="$APP_DIR/Contents/MacOS"
 APP_BIN="$APP_MACOS/DeskFloater"
 ICON_SRC="$PKG/Resources/AppIcon.icns"
@@ -66,6 +75,8 @@ LSREGISTER="${FM_DESK_FLOATER_LSREGISTER:-/System/Library/Frameworks/CoreService
 SIGN_HASH="-"
 SIGN_NAME=""
 SIGN_SOURCE=""
+VERSION="1.0"
+APP_NAME="Starship Floater"
 
 usage() {
   awk '
@@ -94,7 +105,9 @@ write_info_plist() {
   <key>CFBundleIdentifier</key>
   <string>$bundle_id</string>
   <key>CFBundleName</key>
-  <string>DeskFloater</string>
+  <string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key>
+  <string>$APP_NAME</string>
   <key>CFBundleExecutable</key>
   <string>DeskFloater</string>
   <key>CFBundleIconFile</key>
@@ -102,15 +115,17 @@ write_info_plist() {
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
+  <string>$VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$VERSION</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Desk floater records push-to-talk audio so Firstmate can hear your captain input via Deepgram.</string>
+  <string>Starship Floater records push-to-talk audio so Firstmate can hear your captain input via Deepgram.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Desk floater asks Terminal which tab is in front, so dictation into the Firstmate chat is sent rather than only pasted.</string>
+  <string>Starship Floater asks Terminal which tab is in front, so dictation into the Firstmate chat is sent rather than only pasted.</string>
 </dict>
 </plist>
 PLIST
@@ -223,7 +238,7 @@ assemble_app() {
 build() {
   command -v swift >/dev/null 2>&1 || die "swift is not installed"
   [ "$(uname -s)" = Darwin ] || die "the desk floater is macOS-only"
-  note "building DeskFloater (release)"
+  note "building Starship Floater (release)"
   (
     cd "$PKG"
     swift build -c release --product DeskFloater
@@ -261,18 +276,48 @@ forget_other_copies() {
   done
 }
 
+release() {  # <version> <absolute-output-dir>
+  VERSION="$1"
+  [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must be MAJOR.MINOR.PATCH"
+  case "$2" in /*) ;; *) die "output directory must be absolute" ;; esac
+  local archive path
+  archive="$2/Starship-Floater-$VERSION-$(uname -m).zip"
+  [ ! -e "$archive" ] || die "archive already exists: $archive"
+  choose_identity
+  [ "$SIGN_HASH" != "-" ] && [[ "$SIGN_NAME" = "Apple Development:"* ]] || die "release requires an Apple Development identity"
+  APP_DIR="$PKG/.build/desk-floater-release/Starship Floater.app"
+  APP_MACOS="$APP_DIR/Contents/MacOS"
+  APP_BIN="$APP_MACOS/DeskFloater"
+  build
+  assemble_app "$LAUNCH_ID"
+  [ "$SIGN_HASH" != "-" ] || die "release signing failed; refusing an ad-hoc release"
+  codesign --verify --deep --strict "$APP_DIR" || die "release signature verification failed"
+  # Metadata timestamps are not part of the code seal, but are part of a zip.
+  while IFS= read -r -d '' path; do
+    TZ=UTC touch -t 202001010000 "$path"
+  done < <(find "$APP_DIR" -depth -print0)
+  mkdir -p "$2"
+  TZ=UTC ditto -c -k --keepParent --norsrc --noextattr --noqtn "$APP_DIR" "$archive"
+  printf 'version=%s\narchive=%s\nsha256=%s\n' "$VERSION" "$archive" "$(shasum -a 256 "$archive" | awk '{print $1}')"
+}
+
 main() {
   local build_only=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help|-h) usage; exit 0 ;;
       --build-only) build_only=true; shift ;;
+      --release)
+        [ "$#" -eq 3 ] && [ "$build_only" = false ] || die "usage: --release VERSION OUTPUT_DIR (without --build-only)"
+        release "$2" "$3"
+        exit 0 ;;
       -*) die "unexpected option: $1" ;;
       *) die "unexpected argument: $1" ;;
     esac
   done
 
   if [ "$build_only" = true ]; then
+    APP_NAME="Starship Floater (test build)"
     APP_DIR="$BUILD_ONLY_APP_DIR"
     APP_MACOS="$APP_DIR/Contents/MacOS"
     APP_BIN="$APP_MACOS/DeskFloater"
