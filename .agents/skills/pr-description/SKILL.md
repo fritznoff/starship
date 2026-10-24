@@ -14,8 +14,10 @@ Use this order, not a mandatory set of headings:
 
 1. **Title:** Say specifically what changes, using an imperative verb.
    Use `type(scope): change` when the project uses Conventional Commits for PR titles; do not change commit-message rules.
-2. **Opening:** Write one or two standalone sentences explaining the outcome and why it matters.
-   Do not repeat the title.
+2. **Opening:** Put one or two standalone sentences explaining the outcome and why it matters in a quiet `> [!NOTE]` callout.
+   Start inside it with `**TL;DR**` if it reads naturally; do not repeat the title.
+   Use only NOTE for this summary, never IMPORTANT, WARNING or CAUTION.
+   Reserve WARNING or CAUTION for a genuine risk the reviewer must not miss, at most one risk callout; use no emojis.
 3. **Reviewer needs:** Separate what the reviewer must decide or know before merging from what an operator must do after merging.
    Name each group by its content, not "Review" or "Notes".
    Keep warnings and required approvals visible, never buried in collapsed evidence.
@@ -48,7 +50,8 @@ Use this order, not a mandatory set of headings:
 
 `fix: keep uploads resumable after a connection drops`
 
-An interrupted upload can now continue from its last saved chunk instead of starting over, avoiding duplicate work on slow connections.
+> [!NOTE]
+> **TL;DR** An interrupted upload can now continue from its last saved chunk instead of starting over, avoiding duplicate work on slow connections.
 
 - Existing upload links remain valid; expired links still require a new upload.
 - Server restart recovery is not included.
