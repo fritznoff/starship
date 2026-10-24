@@ -283,6 +283,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/pr-description/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/quiet/SKILL.md",
       "audience": "agent-runtime"
     },

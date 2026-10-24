@@ -412,6 +412,7 @@ fm_pr_text_block() {
   cat <<EOF
 
 ## Public PR text
+Load the \`pr-description\` skill (\`$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.agents/skills/pr-description/SKILL.md\`) before writing or editing a PR or MR title or description.
 Personal and work details never go into a public repository's PR titles, descriptions or comments; this home keeps the words it means in a private list.
 Before you open or edit a PR, comment on one, or pass \`--intent\` or a gate answer to no-mistakes, write the draft text to a file and run \`$check --text <file>\` (or pipe the text to \`$check --text\`).
 It names every listed word the text contains; on a public repository, rewrite the text without each named word and check it again, while a private repository's PR may keep them.

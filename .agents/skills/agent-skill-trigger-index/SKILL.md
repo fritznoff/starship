@@ -33,6 +33,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `meeting-intake` - load on a `check:` wake whose line starts `meetings:`, on a captain inbox note that begins `Meeting follow-ups ready to start` or `Meeting items waiting for the captain's tap`, and when the captain asks what was said or agreed in a past personal meeting.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
+- `pr-description` - load whenever writing or editing a PR or MR title or description.
 
 ## Opt-in skills
 
