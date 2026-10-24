@@ -45,8 +45,8 @@ Exactly one fleet brain remains: the primary already running in this home.
 
    First launch builds the Swift package under `desk-floater/` into
    `desk-floater/.build/` (gitignored) and opens the floating control.
-   Grant microphone permission when macOS asks.
-   macOS also asks for the Accessibility and Screen Recording permissions (see [Permissions](#permissions)); the buttons work without Accessibility, the hotkeys and typing into other apps do not, and screenshots need Screen Recording.
+   If any permission is missing, a setup window explains it and opens the right System Settings page (see [Permissions](#permissions)).
+   The buttons work without Accessibility, the hotkeys and typing into other apps do not, and screenshots need Screen Recording.
 
 4. Press Right Command, Right Option and Right Shift together (the default activation shortcut) to bring the floater up (see [Activating the floater](#activating-the-floater)), then hold the button (or click to toggle), speak, release.
    The transcript is typed into the primary Firstmate chat and submitted, or saved to the mailbox when that chat cannot be reached.
@@ -86,7 +86,7 @@ Every button waits for the pointer to rest on it for a moment and then shows a s
 | Recent replies (dropdown arrow, right edge) | Opens a list of the last 10 spoken replies, newest first, each with its time and the start of its text; hover over one to read all of it. Click a reply to hear it again. Stop and Mute work on it as on Repeat, and while muted a click stays silent and the status line says "Voice muted". Click the arrow again to close the list. Runs `bin/fm-speak.sh --history` and `--replay <number>`. |
 | Mute (speaker) | Toggles voice off and on. While muted the icon is a crossed-out speaker on an orange circle, every reply stays text-only, and a reply playing at the moment you mute stops. Runs `bin/fm-speak.sh --mute` / `--unmute`; the setting is per home and survives restarting the floater. |
 | Voice volume (right-click or Control-click the speaker) | Opens a slider below the controls that sets how loud the voice is compared with everything else on the Mac: 100% is the system volume, lower is quieter than other audio, and up to 200% is louder. The Mac's own volume is never changed, the new level applies from the next spoken line, and Reset returns to 100%. Right-click or Control-click again to close it. Runs `bin/fm-speak.sh --volume` / `--volume <percent>`; the level is per home and survives restarting the floater. |
-| Camera (bottom right of the small controls) | Takes a screenshot for Firstmate. See [Screenshots](#screenshots). A number on it counts the shots waiting to be sent; an orange "!" means the Screen Recording permission is missing, and clicking it asks again. |
+| Camera (bottom right of the small controls) | Takes a screenshot for Firstmate. See [Screenshots](#screenshots). A number on it counts the shots waiting to be sent; an orange "!" means the Screen Recording permission is missing, and clicking it opens permission guidance. |
 
 Repeat and the recent list play a reply as soon as you click, from the audio kept when it was first spoken, rather than waiting for Deepgram to make it again.
 A reply with no kept audio, such as one spoken by macOS `say`, is spoken again the ordinary way.
@@ -182,30 +182,41 @@ Nothing is sent anywhere but to this home's Firstmate.
 
 ## Permissions
 
-| Permission | Needed for | Where |
+The permissions window opens at launch when any grant is missing or cannot yet be checked.
+Open it again from the microphone menu bar icon's **Permissions…** item or either orange "!" badge; microphone denial also opens it.
+It is a populated setup window, not a blank Settings scene.
+Each row shows why access is used and whether it is granted, missing, not requested, or (for a stopped or unreachable Terminal) not yet checkable.
+The rows refresh every second while the window is open and when the floater regains focus.
+
+| Permission | Needed for | Open Settings behavior |
 | --- | --- | --- |
-| Microphone | Every capture | Asked the first time you talk. |
-| Accessibility | The activation chord, the Right Option, Right Command and Right Shift hotkeys, and pasting dictated text into other apps | Asked on the first launch. Grant it in System Settings, Privacy & Security, Accessibility, by switching on DeskFloater. |
-| Screen Recording | Screenshots | Asked on the first launch. Grant it in System Settings, Privacy & Security, Screen & System Audio Recording, by switching on DeskFloater. |
-| Automation (Terminal) | Sending dictation typed into the Firstmate chat | Asked the first time you dictate with Terminal in front. Grant it in System Settings, Privacy & Security, Automation, by switching on Terminal under DeskFloater. |
+| Microphone | Every capture | Requests the native Allow prompt if not yet decided, then opens Privacy & Security, Microphone. |
+| Accessibility | Activation chord, hotkeys, and pasting dictation into other apps | Requests access and opens Privacy & Security, Accessibility. |
+| Screen & System Audio Recording | Screenshots only, not system audio | Requests access and opens Privacy & Security, Screen & System Audio Recording. |
+| Automation (Terminal) | Recognising dictation into the Firstmate chat | Opens Terminal if needed, requests the native Allow prompt if not yet decided, then opens Privacy & Security, Automation. Enable Terminal under the floater. |
 
-The floater checks the permission every few seconds and turns the hotkeys on as soon as it is granted, with no restart.
-Until then the hotkeys and the paste are off: an orange "!" badge sits on the talk button, the status line reads "Keys off - click !" in orange, and the on-screen buttons work as normal.
-Clicking the badge asks macOS again and opens the Accessibility settings.
+After **Open Settings**, a small floating helper follows the System Settings window.
+For Accessibility and Screen Recording, drag the floater's icon/name from that bar into the permission list, then switch it on.
+The drag carries the running app bundle, not a shortcut or text path, and its visible name comes from that bundle so renaming the app needs no setup changes.
+Microphone and Automation use the system prompt or an existing switch instead; macOS does not accept app drops on those pages.
+If the Settings window position cannot be read, the helper falls back to a fixed position near the bottom of the screen.
+It stays within the screen, hides while another app is in front, and can be closed independently; closing the permissions window also dismisses it.
 
-Screen Recording works the same way, with its own orange "!" on the Camera control.
-Until it is granted, screenshots are off and the Camera control and Right Shift take none; clicking the Camera control asks macOS again and opens the Screen Recording settings.
-macOS may only notice a new Screen Recording grant after the floater restarts, so choose "Quit & Reopen" if it offers, or restart it with `bin/fm-desk-floater.sh`.
+Until Accessibility is granted, the hotkeys and paste are off, an orange "!" sits on the talk button, and the status reads "Keys off - click !".
+The on-screen buttons still work.
+The floater checks Accessibility every few seconds and enables the hotkeys as soon as it is granted, without restarting.
+Screen Recording has its own orange "!" on the Camera control; screenshots remain off until it is granted.
+macOS may only notice a new Screen Recording grant after the floater restarts, so choose "Quit & Reopen" if offered, or restart with `bin/fm-desk-floater.sh`.
 
 ### Keeping the permissions across rebuilds
 
-macOS keeps both grants for as long as the floater keeps the same signature, so `bin/fm-desk-floater.sh` signs every floater it launches with the same identity.
+macOS keeps the grants for as long as the floater keeps the same signature, so `bin/fm-desk-floater.sh` signs every floater it launches with the same identity.
 It uses the first "Apple Development" certificate in your keychain, the one Xcode creates when you sign in with an Apple ID, so a rebuilt floater keeps its grants and the badges stay away.
 To use another certificate, put its name or SHA-1 hash on one line in this home's private `config/desk-floater-signing-identity` (see [configuration](configuration.md#desk-floater-signing-identity-configdesk-floater-signing-identity)).
 If that certificate is missing, expired or fails to sign, the launcher says so and falls back to the "Apple Development" one, then to ad-hoc, and the floater still starts.
 Without a certificate the floater stays ad-hoc signed and the launcher says so: macOS then ties each grant to that one build, every rebuild (after any change to its code) asks again, and the badges come back.
 The first signed build is new to macOS too, so it is asked about once more.
-When a build is asked about while DeskFloater already shows as switched on in that list, switch it off and on again, or remove it with the minus button and click the badge to add it back.
+When a build is asked about while DeskFloater already shows as switched on in that list, switch it off and on again, or remove it with the minus button and open the permissions window to add it back.
 
 ### Quit & Reopen
 

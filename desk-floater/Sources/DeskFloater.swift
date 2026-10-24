@@ -11,7 +11,7 @@ enum DeskFloaterApp {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        // All windows are AppKit panels; a placeholder SwiftUI scene opens at launch.
+        // AppKit owns the floater and the explicit permissions window; no placeholder scene.
         withExtendedLifetime(delegate) {
             app.run()
         }
@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeys: HotkeyMonitor?
     private var screen: ScreenAccess?
     private let activationSettings = ActivationSettingsWindow()
+    private let permissions = PermissionsController()
 
     @MainActor
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -66,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.onShotTap = { [weak model] in model?.takeShot() }
         hotkeys.onChord = { [weak model] in model?.toggleActive() }
         hotkeys.onTrustChanged = { [weak model] trusted in model?.keysTrusted = trusted }
-        model.onFixKeys = { [weak hotkeys] in hotkeys?.requestAccess() }
+        model.onFixKeys = { [weak self] in self?.permissions.show() }
         hotkeys.start()
         self.hotkeys = hotkeys
         // The floater starts out of sight: only the activation chord, or a
@@ -84,11 +85,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let screen = ScreenAccess()
         screen.onChanged = { [weak model] granted in model?.screenTrusted = granted }
-        model.onFixScreen = { [weak screen] in screen?.requestAccess() }
+        model.onFixScreen = { [weak self] in self?.permissions.show() }
         screen.start()
         self.screen = screen
         model.refreshMute()
         model.recoverRecordings()
+        permissions.start()
     }
 }
 
@@ -425,8 +427,8 @@ struct Activation {
 /// away from typing takes a screenshot, but only while `hotkeysEnabled`: the
 /// configured activation modifiers together switch that on and off. Watching keys in other apps, and typing the dictated text
 /// into them, both need the Accessibility permission. macOS ties that grant to
-/// the app's signature, so an ad-hoc signed rebuild is untrusted again: it asks
-/// once per build, and the keys-off badge asks again on demand.
+/// the app's signature; the permissions window guides grants and the keys-off
+/// badge reopens it on demand.
 @MainActor
 final class HotkeyMonitor {
     var onTalkDown: (() -> Void)?
@@ -442,7 +444,6 @@ final class HotkeyMonitor {
     private static let rightOptionKey: UInt16 = 61
     // Device-dependent modifier bit that tells the right-hand key from the left.
     private static let rightOptionBit: UInt = 0x40
-    private static let askedKey = "askedForAccessibilityBuild"
     private let tapLimit: TimeInterval = 0.5
 
     private var monitors: [Any] = []
@@ -469,42 +470,10 @@ final class HotkeyMonitor {
     private var chord = ActivationChord(bits: ActivationShortcut.load().bits)
 
     func start() {
-        let defaults = UserDefaults.standard
-        let build = Self.buildStamp()
-        if !AXIsProcessTrusted() && defaults.string(forKey: Self.askedKey) != build {
-            defaults.set(build, forKey: Self.askedKey)
-            Self.prompt()
-        }
         checkTrust()
         trustTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkTrust() }
         }
-    }
-
-    /// Asks for the permission again and opens its Settings pane. An ad-hoc
-    /// signed rebuild can still be listed there as switched on while macOS
-    /// ignores the old grant, so the pane is where the captain switches it off and on.
-    func requestAccess() {
-        Self.prompt()
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
-        checkTrust()
-    }
-
-    private static func prompt() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-    }
-
-    /// Identifies this exact build, so a rebuild macOS does not trust yet is
-    /// asked about once more.
-    static func buildStamp() -> String {
-        let path = Bundle.main.executablePath ?? CommandLine.arguments[0]
-        let attrs = (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:]
-        let modified = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        return "\(path)|\(modified)|\(size)"
     }
 
     private func checkTrust() {
@@ -605,35 +574,20 @@ final class HotkeyMonitor {
 }
 
 /// The Screen Recording permission screenshots need. Like Accessibility, macOS
-/// ties it to the app's signature: it is asked for once per build, checked every few
-/// seconds, and asked for again from the camera button's badge.
+/// ties it to the app's signature. It is checked every few seconds; the camera
+/// badge opens the permissions window when a grant is missing.
 @MainActor
 final class ScreenAccess {
     var onChanged: ((Bool) -> Void)?
 
-    private static let askedKey = "askedForScreenRecordingBuild"
     private var timer: Timer?
     private var granted: Bool?
 
     func start() {
-        let defaults = UserDefaults.standard
-        let build = HotkeyMonitor.buildStamp()
-        if !CGPreflightScreenCaptureAccess() && defaults.string(forKey: Self.askedKey) != build {
-            defaults.set(build, forKey: Self.askedKey)
-            _ = CGRequestScreenCaptureAccess()
-        }
         check()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
-    }
-
-    func requestAccess() {
-        _ = CGRequestScreenCaptureAccess()
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
-        }
-        check()
     }
 
     private func check() {
@@ -1254,14 +1208,14 @@ final class FloaterModel: ObservableObject {
         return keysTrusted ? "Hold to talk" : "Keys off - click !"
     }
 
-    /// Asks macOS for the Accessibility permission again (the keys-off badge).
+    /// Opens permission guidance from the keys-off badge.
     var onFixKeys: (() -> Void)?
 
     func fixKeys() {
         onFixKeys?()
     }
 
-    /// Asks macOS for the Screen Recording permission again (the camera badge).
+    /// Opens permission guidance from the camera badge.
     var onFixScreen: (() -> Void)?
 
     // MARK: screenshots (camera button, or a tap of the screenshot key)
@@ -1644,6 +1598,7 @@ final class FloaterModel: ObservableObject {
             guard ok else {
                 mode = .idle
                 status = "Mic denied"
+                onFixKeys?()
                 return
             }
             let url = URL(fileURLWithPath: recordingDir)

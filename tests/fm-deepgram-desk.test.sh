@@ -678,10 +678,12 @@ DIST_NAME="iPhone Distribution: Test Person (TEAM456)"
 # lands in tools.log.
 new_floater_root() {  # <name> <identities-listing>
   local fx="$TMP_ROOT/$1"
-  mkdir -p "$fx/root/bin" "$fx/root/desk-floater/Sources" "$fx/fake" "$fx/root/config"
+  mkdir -p "$fx/root/bin" "$fx/root/desk-floater/Sources" "$fx/root/desk-floater/Resources" "$fx/fake" "$fx/root/config"
   fx=$(cd "$fx" && pwd -P)
   cp "$FLOATER" "$fx/root/bin/fm-desk-floater.sh"
   : > "$fx/root/desk-floater/Sources/DeskFloater.swift"
+  : > "$fx/root/desk-floater/Sources/Permissions.swift"
+  cp "$ROOT/desk-floater/Resources/AppIcon.icns" "$fx/root/desk-floater/Resources/AppIcon.icns"
   : > "$fx/root/desk-floater/Package.swift"
   printf '%s\n' "$2" > "$fx/identities"
   cat > "$fx/fake/swift" <<EOF
@@ -833,6 +835,13 @@ test_floater_build_only_leaves_the_launched_app_alone() {
   assert_equals "com.firstmate.desk-floater.build-only" "$(bundle_id_of "$fx" DeskFloater-build-only)" "a build-only copy never carries the identifier macOS reopens"
   assert_no_grep "fake-sig" "$fx/root/desk-floater/.build/DeskFloater-build-only.app/Contents/MacOS/DeskFloater" "a build-only copy keeps the linker's ad-hoc signature"
   [ ! -s "$fx/tools.log" ] || fail "--build-only ran codesign or looked in the keychain: $(cat "$fx/tools.log")"
+  out=$(run_floater "$fx" --build-only) || fail "unchanged --build-only failed: $out"
+  assert_equals 2 "$(grep -c build "$fx/swift.log")" "unchanged permissions do not rebuild"
+  sleep 1
+  touch "$fx/root/desk-floater/Sources/Permissions.swift"
+  out=$(run_floater "$fx" --build-only) || fail "permissions rebuild failed: $out"
+  assert_equals 3 "$(grep -c build "$fx/swift.log")" "changing only permissions rebuilds the app"
+  [ ! -s "$fx/tools.log" ] || fail "permissions rebuild changed signing"
   cmp -s "$launched/Contents/MacOS/DeskFloater" "$fx/launched.bin" || fail "--build-only rewrote the launched binary or its signature"
   cmp -s "$launched/Contents/Info.plist" "$fx/launched.plist" || fail "--build-only rewrote the launched bundle's Info.plist"
   [ ! -s "$fx/open.log" ] || fail "--build-only launched the app"

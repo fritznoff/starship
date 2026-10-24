@@ -6,7 +6,7 @@ final class ActivationTests: XCTestCase {
     /// Opt in with a bundle made by fm-desk-floater.sh --build-only.
     /// Launches the real app in a temporary home; macOS may ask for Accessibility.
     @MainActor
-    func testSettingsWindowOpensOnlyOnReopen() throws {
+    func testPermissionGuidanceAndReopenNeverCreateABlankWindow() throws {
         guard let path = ProcessInfo.processInfo.environment["FM_DESK_FLOATER_TEST_APP"] else {
             throw XCTSkip("Set FM_DESK_FLOATER_TEST_APP to DeskFloater-build-only.app for the live window regression")
         }
@@ -45,8 +45,17 @@ final class ActivationTests: XCTestCase {
                 ($0[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier
                     && ($0[kCGWindowLayer as String] as? Int) == Int(CGWindowLevelForKey(.normalWindow))
             }
-            // The floater and its tips use floating panels, never a normal window.
-            XCTAssertEqual(!normalWindows.isEmpty, visible, "\(phase): normal windows: \(normalWindows)")
+            // Launch may show permission guidance; reopen additionally shows the shortcut editor.
+            XCTAssertLessThanOrEqual(normalWindows.count, visible ? 2 : 1, "\(phase): normal windows: \(normalWindows)")
+            if visible { XCTAssertFalse(normalWindows.isEmpty, phase) }
+            let titles = normalWindows.compactMap { $0[kCGWindowName as String] as? String }
+            for title in titles {
+                XCTAssertTrue(title == "Activation Shortcut" || title.hasSuffix(" Permissions"),
+                              "\(phase): unexpected window: \(title)")
+            }
+            if visible && titles.count == normalWindows.count {
+                XCTAssertTrue(titles.contains("Activation Shortcut"), "reopen opens the shortcut editor")
+            }
         }
         try assertSettingsWindow("launch without any Settings command")
         app.activate()

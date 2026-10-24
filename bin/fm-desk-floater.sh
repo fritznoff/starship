@@ -235,6 +235,7 @@ needs_build() {
   [ ! -x "$RELEASE_BIN" ] && return 0
   [ ! -x "$APP_BIN" ] && return 0
   [ "$PKG/Sources/DeskFloater.swift" -nt "$APP_BIN" ] && return 0
+  [ "$PKG/Sources/Permissions.swift" -nt "$APP_BIN" ] && return 0
   [ "$PKG/Package.swift" -nt "$APP_BIN" ] && return 0
   [ "$ICON_SRC" -nt "$APP_BIN" ] && return 0
   return 1
