@@ -8,7 +8,7 @@ final class ActivationTests: XCTestCase {
     @MainActor
     func testPermissionGuidanceAndReopenNeverCreateABlankWindow() throws {
         guard let path = ProcessInfo.processInfo.environment["FM_DESK_FLOATER_TEST_APP"] else {
-            throw XCTSkip("Set FM_DESK_FLOATER_TEST_APP to DeskFloater-build-only.app for the live window regression")
+            throw XCTSkip("Set FM_DESK_FLOATER_TEST_APP to Starship Floater (test build).app for the live window regression")
         }
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let bundle = try XCTUnwrap(Bundle(url: url))

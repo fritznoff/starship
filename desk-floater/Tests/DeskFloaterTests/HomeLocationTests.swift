@@ -38,6 +38,19 @@ final class HomeLocationTests: XCTestCase {
         XCTAssertEqual(location?.home, "/home/me/starship")
     }
 
+    func testSavedSettingsReadsJSONAndRejectsMissingOrMalformedFiles() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        XCTAssertEqual(HomeLocation.savedSettings(at: file), [:])
+        try Data(#"{"root":"/home/me/starship","home":"/home/me/private"}"#.utf8).write(to: file)
+        XCTAssertEqual(HomeLocation.savedSettings(at: file),
+                       ["root": "/home/me/starship", "home": "/home/me/private"])
+        try Data("not json".utf8).write(to: file)
+        XCTAssertEqual(HomeLocation.savedSettings(at: file), [:])
+        try Data(#"{"root":3}"#.utf8).write(to: file)
+        XCTAssertEqual(HomeLocation.savedSettings(at: file), [:])
+    }
+
     func testFinderUsesSavedRootAndSeparateHome() {
         let location = resolve([:], bundle: "/Applications/Starship Floater.app",
                                settings: ["root": "/home/me/starship", "home": "/home/me/private"])

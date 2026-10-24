@@ -131,9 +131,8 @@ enum HomeLocation {
         return (root, home ?? root)
     }
 
-    static func savedSettings() -> [String: String] {
-        let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Firstmate/desk-floater.json")
+    static func savedSettings(at file: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Firstmate/desk-floater.json")) -> [String: String] {
         guard let data = try? Data(contentsOf: file),
               let settings = try? JSONDecoder().decode([String: String].self, from: data)
         else { return [:] }
