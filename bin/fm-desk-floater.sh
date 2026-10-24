@@ -15,7 +15,9 @@
 # See docs/desk-floater.md.
 #
 # Builds desk-floater/ into a minimal .app under desk-floater/.build/DeskFloater.app
-# so TCC microphone prompts have an NSMicrophoneUsageDescription.
+# so TCC microphone prompts have an NSMicrophoneUsageDescription. The bundle
+# carries desk-floater/Resources/AppIcon.icns as its icon, copied in before
+# signing; desk-floater/Resources/make-app-icon.sh regenerates it.
 #
 # Signing: macOS keeps the Accessibility and Screen Recording grants only for
 # the same signing identity and bundle identifier. The launched app is signed
@@ -53,6 +55,7 @@ APP_DIR="$PKG/.build/DeskFloater.app"
 BUILD_ONLY_APP_DIR="$PKG/.build/DeskFloater-build-only.app"
 APP_MACOS="$APP_DIR/Contents/MacOS"
 APP_BIN="$APP_MACOS/DeskFloater"
+ICON_SRC="$PKG/Resources/AppIcon.icns"
 LAUNCH_ID="com.firstmate.desk-floater"
 BUILD_ONLY_ID="com.firstmate.desk-floater.build-only"
 IDENTITY_FILE="$FM_HOME/config/desk-floater-signing-identity"
@@ -94,6 +97,8 @@ write_info_plist() {
   <string>DeskFloater</string>
   <key>CFBundleExecutable</key>
   <string>DeskFloater</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -192,8 +197,9 @@ app_is_current() {
 # Replaces the binary by rename rather than writing over it in place, which
 # would disturb a floater still running from it, and drops the old bundle seal.
 copy_app_files() {
-  mkdir -p "$APP_MACOS"
+  mkdir -p "$APP_MACOS" "$APP_DIR/Contents/Resources"
   rm -rf "$APP_DIR/Contents/_CodeSignature"
+  cp "$ICON_SRC" "$APP_DIR/Contents/Resources/AppIcon.icns"
   cp "$RELEASE_BIN" "$APP_BIN.new"
   chmod +x "$APP_BIN.new"
   mv -f "$APP_BIN.new" "$APP_BIN"
@@ -230,6 +236,7 @@ needs_build() {
   [ ! -x "$APP_BIN" ] && return 0
   [ "$PKG/Sources/DeskFloater.swift" -nt "$APP_BIN" ] && return 0
   [ "$PKG/Package.swift" -nt "$APP_BIN" ] && return 0
+  [ "$ICON_SRC" -nt "$APP_BIN" ] && return 0
   return 1
 }
 
