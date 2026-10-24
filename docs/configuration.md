@@ -3212,6 +3212,9 @@ The default cadence is 900 seconds, read back from the digest owner; set `interv
 
 ## Desk voice-out (config/speak)
 
+Spoken replies require a private add-on that is not part of this repository; without it, voice-out stays off.
+The Mac floater hides Stop, Repeat, Mute, voice volume and recent spoken replies when that add-on is missing; push-to-talk and screenshots still work.
+
 An opt-in, per-home and per-device gate for speaking a captain-facing outcome out of this machine's own speaker.
 It ships inert: with no `enabled = true` line in private gitignored `config/speak`, `bin/fm-speak.sh` makes no sound at all, so cloning this repo, seeding a secondmate home, or adding a device never makes it talk.
 

@@ -10,6 +10,7 @@
 #   fm-speak.sh --replay <number>
 #   fm-speak.sh --mute | --unmute | --muted
 #   fm-speak.sh --enabled
+#   fm-speak.sh --available
 #   fm-speak.sh --volume [<percent>]
 #   fm-speak.sh --help
 #
@@ -149,6 +150,8 @@
 #             reader of config/speak: the reply-speak Stop hook stands down,
 #             and the session-start digest prints the spoken-lead reply rules
 #             (docs/desk-voice-replies.md), only when it prints `enabled`.
+#   --available prints `available` if the resolved register owner is executable,
+#             or `unavailable` otherwise, without invoking it or reading config.
 #   --volume [<percent>]
 #             prints, or with a whole number from 0 to 200 sets, the spoken
 #             voice's level as a percentage of the Mac's own output volume: 100
@@ -1042,9 +1045,9 @@ main() {
     case "$1" in
       --help|-h) usage; exit 0 ;;
       --dry-run) dry_run=true; shift ;;
-      --stop|--repeat|--history|--replay|--mute|--unmute|--muted|--enabled|--volume)
+      --stop|--repeat|--history|--replay|--mute|--unmute|--muted|--enabled|--available|--volume)
         [ -z "$control" ] || {
-          note "only one of --stop, --repeat, --history, --replay, --mute, --unmute, --muted, --enabled, --volume"
+          note "only one of --stop, --repeat, --history, --replay, --mute, --unmute, --muted, --enabled, --available, --volume"
           exit 1
         }
         control=${1#--}
@@ -1079,6 +1082,9 @@ main() {
       mute) set_muted true ;;
       unmute) set_muted false ;;
       muted) if is_muted; then printf 'muted\n'; else printf 'unmuted\n'; fi ;;
+      available)
+        if [ -x "$SHAPER" ]; then printf 'available\n'; else printf 'unavailable\n'; fi
+        ;;
       enabled)
         load_config
         if [ "$CFG_ENABLED" = true ]; then printf 'enabled\n'; else printf 'disabled\n'; fi

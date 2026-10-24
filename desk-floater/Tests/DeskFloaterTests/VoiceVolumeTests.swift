@@ -86,6 +86,7 @@ final class VoiceVolumeTests: XCTestCase {
         #!/bin/sh
         printf '%s\\n' "$*" >> '\(log.path)'
         case "$1" in
+          --available) printf 'available\\n' ;;
           --volume) [ "$#" -eq 1 ] && printf '60\\n' ;;
           --muted) printf 'unmuted\\n' ;;
         esac
@@ -107,6 +108,38 @@ final class VoiceVolumeTests: XCTestCase {
 
         model.toggleVolume()
         XCTAssertFalse(model.showingVolume)
+    }
+
+    @MainActor
+    func testVoiceControlsFollowAddonAvailabilityAndCloseWhenItDisappears() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-addon-\(UUID().uuidString)")
+        let bin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let available = root.appendingPathComponent("available")
+        let stub = bin.appendingPathComponent("fm-speak.sh")
+        try """
+        #!/bin/sh
+        case "$1" in
+          --available) if [ -e '\(available.path)' ]; then echo available; else echo unavailable; fi ;;
+          --muted) echo muted ;;
+        esac
+        """.write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+
+        let model = FloaterModel(repoRoot: root.path, fmHome: root.path)
+        XCTAssertFalse(model.voiceOutAvailable)
+        try "".write(to: available, atomically: true, encoding: .utf8)
+        model.refreshMute()
+        try await waitUntil { model.voiceOutAvailable && model.muted }
+        model.showingVolume = true
+        model.showingRecent = true
+        try FileManager.default.removeItem(at: available)
+        model.refreshMute()
+        try await waitUntil { !model.voiceOutAvailable }
+        XCTAssertFalse(model.showingVolume)
+        XCTAssertFalse(model.showingRecent)
     }
 
     @MainActor

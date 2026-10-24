@@ -1080,6 +1080,7 @@ final class FloaterModel: ObservableObject {
     @Published var mode: Mode = .idle
     @Published var purpose: Purpose = .firstmate
     @Published var status: String = "Hold to talk"
+    @Published var voiceOutAvailable = false
     @Published var muted = false
     /// The spoken voice's level as a percentage of the system volume.
     @Published var voiceVolume = VoiceVolume.standard
@@ -1565,10 +1566,17 @@ final class FloaterModel: ObservableObject {
 
     func refreshMute() {
         Task.detached(priority: .utility) { [repoRoot, fmHome] in
-            let out = Self.speak(repoRoot: repoRoot, fmHome: fmHome, args: ["--muted"])
+            let available = Self.speak(repoRoot: repoRoot, fmHome: fmHome, args: ["--available"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "available"
+            let out = available ? Self.speak(repoRoot: repoRoot, fmHome: fmHome, args: ["--muted"]) : nil
             let muted = out?.trimmingCharacters(in: .whitespacesAndNewlines) == "muted"
             await MainActor.run {
+                self.voiceOutAvailable = available
                 self.muted = muted
+                if !available {
+                    self.showingVolume = false
+                    self.showingRecent = false
+                }
             }
         }
     }
@@ -2027,24 +2035,30 @@ struct FloaterView: View {
     }
 
     private var rowWidth: CGFloat {
-        mainSize + rowSpacing + controlSize * 2 + controlSpacing + rowSpacing + arrowWidth
+        model.voiceOutAvailable
+            ? mainSize + rowSpacing + controlSize * 2 + controlSpacing + rowSpacing + arrowWidth
+            : mainSize + rowSpacing + controlSize
     }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(spacing: rowSpacing) {
                 mainButton
-                VStack(spacing: controlSpacing) {
-                    HStack(spacing: controlSpacing) {
-                        control("stop.fill", help: "Stop the spoken reply", action: model.stopTalking)
-                        control("arrow.counterclockwise", help: "Repeat the last spoken reply", action: model.repeatLast)
+                if model.voiceOutAvailable {
+                    VStack(spacing: controlSpacing) {
+                        HStack(spacing: controlSpacing) {
+                            control("stop.fill", help: "Stop the spoken reply", action: model.stopTalking)
+                            control("arrow.counterclockwise", help: "Repeat the last spoken reply", action: model.repeatLast)
+                        }
+                        HStack(spacing: controlSpacing) {
+                            speakerButton
+                            shotButton
+                        }
                     }
-                    HStack(spacing: controlSpacing) {
-                        speakerButton
-                        shotButton
-                    }
+                    recentToggle
+                } else {
+                    shotButton
                 }
-                recentToggle
             }
             HStack(spacing: 0) {
                 Text(model.status)
@@ -2059,10 +2073,10 @@ struct FloaterView: View {
                     grip
                 }
             }
-            if model.showingVolume {
+            if model.voiceOutAvailable && model.showingVolume {
                 volumeControl
             }
-            if model.showingRecent {
+            if model.voiceOutAvailable && model.showingRecent {
                 recentList
             }
             if expanded {

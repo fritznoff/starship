@@ -382,6 +382,9 @@ A recording whose transcription still fails is saved and retried as above.
 
 ## Desk speak-out bound
 
+Spoken replies require a private add-on that is not part of this repository; without it, voice-out stays off.
+The Mac floater hides Stop, Repeat, Mute, voice volume and recent spoken replies when that add-on is missing; push-to-talk and screenshots still work.
+
 The register owner truncates the shaped line before any speaker sees it, and
 its own default budget is the ~8s one tuned for the glasses, which cuts an
 ordinary two- or three-sentence desk outcome mid-message.

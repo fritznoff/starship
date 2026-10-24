@@ -982,6 +982,33 @@ test_an_unusable_state_directory_is_refused_before_anything_is_shaped() {
   pass "fm-speak: an unusable state directory is refused before anything is shaped"
 }
 
+# Availability uses the speech path's resolution, without opting in or executing
+# the private owner. A newer non-executable clone still shadows the old clone.
+test_available_probes_the_resolved_owner_without_running_it() {
+  local home out
+  home=$(new_home available 'invalid config')
+  probe_available() {
+    FM_HOME="$home" FM_SPEAK_SHAPER="${1:-}" "$SPEAK" --available
+  }
+  assert_equals unavailable "$(probe_available)" "no add-on must be unavailable"
+  mkdir -p "$home/projects/glasses-voice/bin" "$home/projects/starship-voice/bin"
+  printf '#!/bin/sh\nexit 99\n' > "$home/projects/glasses-voice/bin/announce"
+  chmod +x "$home/projects/glasses-voice/bin/announce"
+  assert_equals available "$(probe_available)" "legacy executable must be available without running it"
+  touch "$home/projects/starship-voice/bin/announce"
+  assert_equals unavailable "$(probe_available)" "a non-executable newer owner must shadow the legacy owner"
+  chmod +x "$home/projects/starship-voice/bin/announce"
+  assert_equals available "$(probe_available)" "newer executable must be available"
+  assert_equals unavailable "$(probe_available "$home/missing")" "explicit missing owner must win"
+  assert_equals available "$(probe_available "$home/projects/glasses-voice/bin/announce")" "explicit executable must win"
+  out=$(probe_available)
+  [ ! -e "$home/state" ] || fail "the probe must not create state"
+  assert_equals available "$out" "invalid speech config must not affect availability"
+  FM_HOME="$home" "$SPEAK" --available extra >/dev/null 2>&1 && fail "probe must refuse text"
+  FM_HOME="$home" "$SPEAK" --available --dry-run >/dev/null 2>&1 && fail "probe must refuse dry-run"
+  pass "fm-speak: availability probes the resolved executable without speech or configuration"
+}
+
 # --enabled answers whether this home speaks at all, from config/speak alone:
 # the mute does not change it, and asking writes nothing.
 test_enabled_reports_the_opt_in() {
@@ -1479,6 +1506,7 @@ test_the_reply_history_is_readable_only_by_its_owner() {
 
 test_a_home_that_never_opted_in_stays_silent
 test_an_absent_config_is_the_same_as_not_opted_in
+test_available_probes_the_resolved_owner_without_running_it
 test_an_opted_in_home_speaks_the_shaped_line
 test_a_request_for_a_spoken_yes_is_never_spoken
 test_a_line_that_is_only_a_link_is_not_spoken
