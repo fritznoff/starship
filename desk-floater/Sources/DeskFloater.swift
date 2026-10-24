@@ -5,12 +5,15 @@ import AVFoundation
 import SwiftUI
 
 @main
-struct DeskFloaterApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
+enum DeskFloaterApp {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        // All windows are AppKit panels; a placeholder SwiftUI scene opens at launch.
+        withExtendedLifetime(delegate) {
+            app.run()
         }
     }
 }
