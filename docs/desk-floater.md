@@ -48,16 +48,25 @@ Exactly one fleet brain remains: the primary already running in this home.
    Grant microphone permission when macOS asks.
    macOS also asks for the Accessibility and Screen Recording permissions (see [Permissions](#permissions)); the buttons work without Accessibility, the hotkeys and typing into other apps do not, and screenshots need Screen Recording.
 
-4. Press Right Command, Right Option and Right Shift together to bring the floater up (see [Activating the floater](#activating-the-floater)), then hold the button (or click to toggle), speak, release.
+4. Press Right Command, Right Option and Right Shift together (the default activation shortcut) to bring the floater up (see [Activating the floater](#activating-the-floater)), then hold the button (or click to toggle), speak, release.
    The transcript is typed into the primary Firstmate chat and submitted, or saved to the mailbox when that chat cannot be reached.
 
 ## Activating the floater
 
 The floater starts hidden, and while it is hidden none of the hotkeys below do anything.
-Press Right Command, Right Option and Right Shift together, all three right-hand keys at once, and it appears; from then on the hotkeys work.
+Press the activation shortcut (Right Command + Right Option + Right Shift by default), and it appears; from then on the hotkeys work.
 Press the same chord again and it disappears and the hotkeys go quiet again.
-The left-hand keys never count, and pressing the chord never starts a recording, dictation or screenshot, whichever of the three keys you press first.
+Only the selected left/right modifier keys count, and completing the chord never sends a recording or starts dictation or a screenshot, whichever key you press first.
 If a capture had just begun as the first key of the chord went down, it is dropped without sending anything.
+Release all selected keys before pressing the chord again.
+
+To change the shortcut, launch the already-running floater again (open the app again or run `bin/fm-desk-floater.sh`).
+Only that second launch opens the Activation Shortcut settings window; ordinary activation and the initial launch do not open it.
+Pick at least two of the left/right Command, Option, Shift and Control keys, for example Right Command + Right Option.
+Valid changes apply immediately and are saved for the app; incomplete selections do not replace the last valid shortcut.
+A warning identifies keys shared with the existing talk, dictation and screenshot hotkeys, which are unchanged.
+The floater ignores hotkeys while this window is open, so choosing keys cannot trigger a capture.
+Close the window to use the new shortcut.
 
 It also switches itself off after two minutes without use. Use means the chord, any hotkey, a click on the floater, and any recording, dictation, screenshot or message still being sent or waiting to be sent or retried; it never switches off under those, and the two minutes start again when they finish. Sending a message does not hide it.
 Without the Accessibility permission the chord cannot be read, so the floater stays in sight (with its "!" badge, see [Permissions](#permissions)) until the permission is granted, and then hides.
@@ -105,7 +114,7 @@ After you release, it keeps listening for a moment, so a last word still being s
 | Right Shift, tapped while you are not typing | Takes a screenshot of the display under the mouse pointer. See [Screenshots](#screenshots). |
 
 These work only while the floater is [active](#activating-the-floater).
-Only the right-hand keys are watched, so the left Option, Command and Shift keys keep working as usual.
+The talk, dictation and screenshot hotkeys watch only right-hand keys; left-hand keys keep working as usual unless selected for the activation shortcut.
 Right Shift follows the same tap rules as Right Command: held with a letter to type a capital, or held longer than half a second, it is an ordinary Shift press and takes no screenshot.
 It also takes no screenshot while you are typing, so a Shift brushed on the way to a capital, a question mark or Return is ignored: a tap within a second and a half of your last key, or followed by a key within half a second, counts as typing.
 A tap that stands takes its screenshot half a second after you let go, and two taps within that half second take one screenshot.

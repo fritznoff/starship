@@ -18,10 +18,23 @@ enum DeskFloaterApp {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: FloaterPanel?
     private var hotkeys: HotkeyMonitor?
     private var screen: ScreenAccess?
+    private let activationSettings = ActivationSettingsWindow()
+
+    @MainActor
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard let hotkeys else { return false }
+        hotkeys.resetHotkeys()
+        activationSettings.show(shortcut: hotkeys.activationShortcut) { [weak hotkeys] shortcut in
+            shortcut.save()
+            hotkeys?.activationShortcut = shortcut
+        }
+        return false
+    }
 
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -45,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.panel = panel
 
         let hotkeys = HotkeyMonitor()
+        hotkeys.settingsVisible = { [weak self] in self?.activationSettings.isVisible == true }
         hotkeys.onTalkDown = { [weak model] in model?.hotkeyTalkBegan() }
         hotkeys.onTalkUp = { [weak model] in model?.hotkeyTalkEnded() }
         hotkeys.onTalkChord = { [weak model] in model?.hotkeyTalkChorded() }
@@ -349,21 +363,21 @@ struct TalkKey {
     }
 }
 
-/// Right Command, Right Option and Right Shift held down together: the chord
-/// that activates the floater and, pressed again, deactivates it. Only the
-/// right-hand keys count, by their device-dependent modifier bits.
+/// The configured side-specific modifiers toggle activation once per press.
 struct ActivationChord {
-    static let bits: UInt = 0x10 | 0x40 | 0x04
+    let bits: UInt
     private(set) var held = false
 
-    /// Feeds the modifier flags after a change; true once as the third key goes
-    /// down. The chord only fires again after all three have been let go, and
-    /// `held` stays true until then so its keys do nothing else meanwhile.
+    init(bits: UInt = ActivationShortcut.defaultBits) {
+        self.bits = bits
+    }
+
+    /// Suppress all hotkeys until every selected modifier has been released.
     mutating func update(flags: UInt) -> Bool {
-        let down = flags & Self.bits
+        let down = flags & bits
         if down == 0 {
             held = false
-        } else if down == Self.bits && !held {
+        } else if down == bits && !held {
             held = true
             return true
         }
@@ -409,7 +423,7 @@ struct Activation {
 /// Global keys: Right Option held is push-to-talk to Firstmate, a lone tap of
 /// Right Command starts or finishes dictation, and a lone tap of Right Shift
 /// away from typing takes a screenshot, but only while `hotkeysEnabled`: the
-/// three right-hand keys together switch that on and off. Watching keys in other apps, and typing the dictated text
+/// configured activation modifiers together switch that on and off. Watching keys in other apps, and typing the dictated text
 /// into them, both need the Accessibility permission. macOS ties that grant to
 /// the app's signature, so an ad-hoc signed rebuild is untrusted again: it asks
 /// once per build, and the keys-off badge asks again on demand.
@@ -437,7 +451,22 @@ final class HotkeyMonitor {
     private var talkKey = TalkKey()
     private var dictateKey = TapKey.rightCommand
     private var shotKey = TapKey.rightShift
-    private var chord = ActivationChord()
+    var settingsVisible: (() -> Bool)?
+    var activationShortcut = ActivationShortcut.load() {
+        didSet {
+            chord = ActivationChord(bits: activationShortcut.bits)
+            resetHotkeys()
+        }
+    }
+
+    func resetHotkeys() {
+        talkKey = TalkKey()
+        dictateKey = TapKey.rightCommand
+        shotKey = TapKey.rightShift
+        onTalkChord?()
+    }
+
+    private var chord = ActivationChord(bits: ActivationShortcut.load().bits)
 
     func start() {
         let defaults = UserDefaults.standard
@@ -511,12 +540,11 @@ final class HotkeyMonitor {
         monitors.removeAll()
     }
 
-    private func handle(_ event: NSEvent) {
+    func handle(_ event: NSEvent) {
+        guard settingsVisible?() != true else { return }
         if event.type == .flagsChanged && chord.update(flags: event.modifierFlags.rawValue) {
             // Whatever the first keys of the chord began is dropped with it.
-            talkKey = TalkKey()
-            dictateKey = TapKey.rightCommand
-            shotKey = TapKey.rightShift
+            resetHotkeys()
             onChord?()
             return
         }
@@ -1147,7 +1175,7 @@ final class FloaterModel: ObservableObject {
         }
     }
 
-    // MARK: activation (the chord of the three right-hand keys)
+    // MARK: activation
 
     /// Called when the hotkeys are switched on or off.
     var onActiveChanged: ((Bool) -> Void)?

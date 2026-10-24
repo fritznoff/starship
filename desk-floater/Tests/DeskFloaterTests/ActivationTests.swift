@@ -6,7 +6,7 @@ final class ActivationTests: XCTestCase {
     /// Opt in with a bundle made by fm-desk-floater.sh --build-only.
     /// Launches the real app in a temporary home; macOS may ask for Accessibility.
     @MainActor
-    func testLaunchAndReopenNeverCreateASettingsWindow() throws {
+    func testSettingsWindowOpensOnlyOnReopen() throws {
         guard let path = ProcessInfo.processInfo.environment["FM_DESK_FLOATER_TEST_APP"] else {
             throw XCTSkip("Set FM_DESK_FLOATER_TEST_APP to DeskFloater-build-only.app for the live window regression")
         }
@@ -36,7 +36,7 @@ final class ActivationTests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(1))
         }
 
-        func assertNoSettingsWindow(_ phase: String) throws {
+        func assertSettingsWindow(_ phase: String, visible: Bool = false) throws {
             RunLoop.current.run(until: Date().addingTimeInterval(2))
             XCTAssertFalse(app.isTerminated, phase)
             XCTAssertTrue(app.isFinishedLaunching, phase)
@@ -46,18 +46,111 @@ final class ActivationTests: XCTestCase {
                     && ($0[kCGWindowLayer as String] as? Int) == Int(CGWindowLevelForKey(.normalWindow))
             }
             // The floater and its tips use floating panels, never a normal window.
-            XCTAssertTrue(normalWindows.isEmpty, "\(phase): unexpected normal window: \(normalWindows)")
+            XCTAssertEqual(!normalWindows.isEmpty, visible, "\(phase): normal windows: \(normalWindows)")
         }
-        try assertNoSettingsWindow("launch without any Settings command")
+        try assertSettingsWindow("launch without any Settings command")
         app.activate()
-        try assertNoSettingsWindow("activation")
+        try assertSettingsWindow("activation")
         let reopened = expectation(description: "reopen delivered")
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
             XCTAssertNil(error)
             reopened.fulfill()
         }
         wait(for: [reopened], timeout: 10)
-        try assertNoSettingsWindow("reopen")
+        try assertSettingsWindow("reopen", visible: true)
+    }
+
+    func testShortcutParsingAndValidation() {
+        XCTAssertNil(ActivationShortcut(stored: "Right Command + A"))
+        XCTAssertNil(ActivationShortcut(stored: "-1"))
+        XCTAssertNil(ActivationShortcut(stored: ""))
+        XCTAssertNil(ActivationShortcut(bits: 0))
+        for choice in ActivationShortcut.choices {
+            XCTAssertNil(ActivationShortcut(bits: choice.bit), choice.name)
+        }
+        XCTAssertNil(ActivationShortcut(bits: 0x10 | 0x40 | 0x100000))
+        let pair = ActivationShortcut(bits: 0x10 | 0x40)!
+        XCTAssertEqual(ActivationShortcut(stored: "80"), pair)
+        XCTAssertEqual(pair.name, "Right Command + Right Option")
+        XCTAssertNotNil(pair.warning)
+        XCTAssertNil(ActivationShortcut(bits: 0x08 | 0x20)?.warning)
+    }
+
+    func testShortcutPersistenceAndInvalidFallback() throws {
+        let suite = "activation-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(ActivationShortcut.load(from: defaults).bits, ActivationShortcut.defaultBits)
+        let pair = try XCTUnwrap(ActivationShortcut(bits: 0x10 | 0x40))
+        pair.save(to: defaults)
+        let reopened = try XCTUnwrap(UserDefaults(suiteName: suite))
+        XCTAssertEqual(ActivationShortcut.load(from: reopened), pair)
+        for invalid in ["abc", "16", "0", "1048656"] {
+            defaults.set(invalid, forKey: ActivationShortcut.defaultsKey)
+            XCTAssertEqual(ActivationShortcut.load(from: defaults).bits, ActivationShortcut.defaultBits)
+        }
+    }
+
+    func testEveryModifierPairDistinguishesSidesAndLatchesUntilReleased() {
+        for (index, first) in ActivationShortcut.choices.enumerated() {
+            for second in ActivationShortcut.choices.dropFirst(index + 1) {
+                for order in [[first.bit, second.bit], [second.bit, first.bit]] {
+                    var chord = ActivationChord(bits: first.bit | second.bit)
+                    XCTAssertFalse(chord.update(flags: order[0]))
+                    XCTAssertTrue(chord.update(flags: order[0] | order[1]))
+                    XCTAssertFalse(chord.update(flags: order[1]))
+                    XCTAssertTrue(chord.held)
+                    XCTAssertFalse(chord.update(flags: order[0] | order[1]))
+                    XCTAssertFalse(chord.update(flags: 0))
+                    XCTAssertFalse(chord.held)
+                    XCTAssertTrue(chord.update(flags: order[0] | order[1]))
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testShortcutAppliesLiveAndDropsPendingCapture() {
+        let monitor = HotkeyMonitor()
+        var dropped = 0
+        monitor.onTalkChord = { dropped += 1 }
+        monitor.activationShortcut = ActivationShortcut(bits: 0x10 | 0x40)!
+        XCTAssertEqual(monitor.activationShortcut.bits, 0x50)
+        XCTAssertEqual(dropped, 1)
+    }
+
+    @MainActor
+    func testCustomChordCancelsCaptureAndNeverDeliversOrDictates() throws {
+        for order: [UInt16] in [[61, 54], [54, 61]] {
+            let monitor = HotkeyMonitor()
+            monitor.activationShortcut = ActivationShortcut(bits: 0x10 | 0x40)!
+            monitor.hotkeysEnabled = true
+            var toggles = 0
+            var drops = 0
+            var deliveries = 0
+            var dictations = 0
+            var shots = 0
+            monitor.onChord = { toggles += 1 }
+            monitor.onTalkChord = { drops += 1 }
+            monitor.onTalkUp = { deliveries += 1 }
+            monitor.onDictateTap = { dictations += 1 }
+            monitor.onShotTap = { shots += 1 }
+            var flags: UInt = 0
+            for (index, code) in (order + order.reversed()).enumerated() {
+                let bit: UInt = code == 61 ? 0x40 : 0x10
+                flags = index < 2 ? flags | bit : flags & ~bit
+                let cg = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: index < 2))
+                cg.type = .flagsChanged
+                let generic: UInt = (flags & 0x40 != 0 ? 0x80000 : 0) | (flags & 0x10 != 0 ? 0x100000 : 0)
+                cg.flags = CGEventFlags(rawValue: UInt64(flags | generic))
+                monitor.handle(try XCTUnwrap(NSEvent(cgEvent: cg)))
+            }
+            XCTAssertEqual(toggles, 1)
+            XCTAssertEqual(drops, 1)
+            XCTAssertEqual(deliveries, 0)
+            XCTAssertEqual(dictations, 0)
+            XCTAssertEqual(shots, 0)
+        }
     }
 
     private let start = Date(timeIntervalSince1970: 1_000_000)
