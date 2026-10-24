@@ -772,7 +772,7 @@ EOF
 run_floater() {  # <fixture> [args...]
   local fx=$1
   shift
-  PATH="$fx/fake:$PATH" FM_HOME="$fx/root" FM_DESK_FLOATER_LSREGISTER="$fx/fake/lsregister" \
+  HOME="$fx/user" PATH="$fx/fake:$PATH" FM_HOME="$fx/root" FM_DESK_FLOATER_INSTALLED_APP="$fx/installed/Starship Floater.app" FM_DESK_FLOATER_LSREGISTER="$fx/fake/lsregister" \
     "$fx/root/bin/fm-desk-floater.sh" "$@" 2>&1
 }
 
@@ -851,6 +851,43 @@ test_floater_build_only_leaves_the_launched_app_alone() {
   [ ! -s "$fx/open.log" ] || fail "--build-only launched the app"
   [ ! -s "$fx/lsregister.log" ] || fail "--build-only touched LaunchServices"
   pass "fm-desk-floater: --build-only assembles its own ad-hoc bundle and never touches the launched one"
+}
+
+test_floater_prefers_the_installed_app() {
+  local fx app out settings
+  if [ "$(uname)" != Darwin ]; then
+    pass "fm-desk-floater: installed selection skipped (need macOS)"
+    return
+  fi
+  fx=$(new_floater_root floater-installed "$(floater_listing)")
+  app="$fx/installed/Starship Floater.app"
+  mkdir -p "$app/Contents/MacOS"
+  printf '#!/bin/sh\nexit 0\n' > "$app/Contents/MacOS/DeskFloater"
+  chmod +x "$app/Contents/MacOS/DeskFloater"
+  out=$(run_floater "$fx") || fail "installed launch failed: $out"
+  [ ! -s "$fx/swift.log" ] && [ ! -s "$fx/tools.log" ] || fail "installed launch built or signed a source copy"
+  [ ! -d "$fx/root/desk-floater/.build/Starship Floater.app" ] || fail "installed launch created a source bundle"
+  assert_grep "--env FM_HOME=$fx/root --env FM_DESK_FLOATER_ROOT=$fx/root $app" "$fx/open.log" "installed app receives this home's launch environment"
+  assert_grep "-f $app" "$fx/lsregister.log" "only installed app registered for reopening"
+  assert_grep "-u $fx/root/desk-floater/.build/Starship Floater.app" "$fx/lsregister.log" "source copy unregistered"
+  assert_no_grep "-f $fx/root" "$fx/lsregister.log" "source copy never registered"
+  settings="$fx/user/Library/Application Support/Firstmate/desk-floater.json"
+  python3 - "$settings" "$fx/root" <<'PYCHECK' || fail "Finder home was not saved correctly"
+import json, os, stat, sys
+assert json.load(open(sys.argv[1])) == {"root": sys.argv[2], "home": sys.argv[2]}
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600
+PYCHECK
+  cp "$settings" "$fx/settings.before"
+  : > "$fx/open.log"
+  : > "$fx/lsregister.log"
+  out=$(run_floater "$fx" --build-only) || fail "build-only with installed app failed: $out"
+  assert_equals "$fx/root/desk-floater/.build/Starship Floater (test build).app" "$(printf '%s\n' "$out" | tail -n 1)" "build-only still assembles its isolated app"
+  [ ! -s "$fx/open.log" ] && [ ! -s "$fx/lsregister.log" ] || fail "build-only affected launch registration"
+  cmp -s "$settings" "$fx/settings.before" || fail "build-only changed Finder home"
+  rm "$app/Contents/MacOS/DeskFloater"
+  if run_floater "$fx" >/dev/null 2>&1; then fail "broken installed app silently fell back to source"; fi
+  [ ! -d "$fx/root/desk-floater/.build/Starship Floater.app" ] || fail "broken installed app created a launched source copy"
+  pass "fm-desk-floater: installed app wins without building, home survives Finder reopening, and build-only stays isolated"
 }
 
 test_floater_release() {
@@ -3052,6 +3089,7 @@ test_stt_vocabulary_preserves_compound_tokens
 test_stt_vocabulary_rewrites_possessive_names
 test_stt_vocabulary_rewrites_complete_compounds_and_valid_shorter_phrases
 test_stt_reads_the_model_from_dotenv
+test_floater_prefers_the_installed_app
 test_floater_release
 test_floater_help_and_option_refusal
 test_floater_signs_with_a_stable_identity

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build and launch the Mac desk push-to-talk floater for this Firstmate home.
+# Launch the Mac push-to-talk Starship Floater, or build it when absent.
 #
 # Usage:
 #   fm-desk-floater.sh [--build-only]
 #   fm-desk-floater.sh --release VERSION OUTPUT_DIR
 #   fm-desk-floater.sh --help
 #
-# Requires macOS with Swift 5.9+, microphone permission on first use, and
+# Requires macOS, Swift 5.9+ only for source builds, microphone permission, and
 # DEEPGRAM_API_KEY in the environment or this home's gitignored .env. The global
 # hotkeys (and the Right Command + Right Option + Right Shift chord that shows
 # the otherwise hidden floater) and typing dictated text into other apps also
@@ -15,7 +15,13 @@
 # asked on first use.
 # See docs/desk-floater.md.
 #
-# Builds desk-floater/ into a minimal .app under desk-floater/.build/Starship Floater.app
+# Prefers /Applications/Starship Floater.app, saving this root and FM_HOME
+# in ~/Library/Application Support/Firstmate/desk-floater.json for Finder,
+# login items and Quit & Reopen. It unregisters other copies of the launched
+# identifier and registers only the installed app. No source build or signing
+# happens on this path. A broken installed app is an error, not a source fallback.
+#
+# Otherwise builds desk-floater/ into a minimal .app under desk-floater/.build/Starship Floater.app
 # so TCC microphone prompts have an NSMicrophoneUsageDescription. The bundle
 # carries desk-floater/Resources/AppIcon.icns as its icon, copied in before
 # signing; desk-floater/Resources/make-app-icon.sh regenerates it.
@@ -32,7 +38,7 @@
 # app whose signature differs from what this run wants is re-signed without
 # recompiling.
 #
-# Only the launched app, com.firstmate.desk-floater, carries the identifier
+# Source and installed apps share com.firstmate.desk-floater, the identifier
 # macOS reopens by. --build-only, such as a verification build in a task
 # worktree, assembles desk-floater/.build/Starship Floater (test build).app instead,
 # as com.firstmate.desk-floater.build-only with the linker's ad-hoc signature
@@ -52,7 +58,8 @@
 #
 # Environment: FM_HOME selects the home whose config/ is read and that the
 # floater serves (default: this code root). FM_DESK_FLOATER_LSREGISTER overrides
-# the lsregister path.
+# the lsregister path. FM_DESK_FLOATER_INSTALLED_APP overrides the installed
+# app path for custom appdirs or isolated verification.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +68,7 @@ FM_HOME="${FM_HOME:-$ROOT}"
 PKG="$ROOT/desk-floater"
 RELEASE_BIN="$PKG/.build/release/DeskFloater"
 APP_DIR="$PKG/.build/Starship Floater.app"
+INSTALLED_APP="${FM_DESK_FLOATER_INSTALLED_APP:-/Applications/Starship Floater.app}"
 BUILD_ONLY_APP_DIR="$PKG/.build/Starship Floater (test build).app"
 APP_MACOS="$APP_DIR/Contents/MacOS"
 APP_BIN="$APP_MACOS/DeskFloater"
@@ -259,10 +267,11 @@ needs_build() {
 # Drops LaunchServices' record of every other copy registered under the
 # launched identifier, so macOS can only reopen this one.
 forget_other_copies() {
-  local keep path
+  local keep path dump
   [ -x "$LSREGISTER" ] || return 0
   keep=$(cd "$APP_DIR" && pwd -P)
-  "$LSREGISTER" -dump Bundle 2>/dev/null | awk -v id="$LAUNCH_ID" '
+  dump=$("$LSREGISTER" -dump Bundle 2>/dev/null) || return 1
+  printf '%s\n' "$dump" | awk -v id="$LAUNCH_ID" '
     /^-----/ { if (hit && path != "") print path; path = ""; hit = 0; next }
     /^path:/ { path = $0; sub(/^path:[ \t]*/, "", path); sub(/ \(0x[0-9a-fA-F]+\)$/, "", path); next }
     /^identifier:/ { v = $0; sub(/^identifier:[ \t]*/, "", v); if (v == id) hit = 1; next }
@@ -272,8 +281,31 @@ forget_other_copies() {
     [ "$path" = "$APP_DIR" ] && continue
     if "$LSREGISTER" -u "$path" >/dev/null 2>&1; then
       note "macOS will no longer reopen the other copy at $path"
+    else
+      note "could not unregister the other copy at $path"
+      return 1
     fi
   done
+}
+
+remember_home() {
+  python3 - "$HOME/Library/Application Support/Firstmate/desk-floater.json" "$ROOT" "$FM_HOME" <<'PYHOME'
+import json
+import os
+import sys
+import tempfile
+path, root, home = sys.argv[1:]
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=".desk-floater-", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w") as file:
+        json.dump({"root": root, "home": home}, file)
+        file.write("\n")
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PYHOME
 }
 
 release() {  # <version> <absolute-output-dir>
@@ -302,7 +334,7 @@ release() {  # <version> <absolute-output-dir>
 }
 
 main() {
-  local build_only=false
+  local build_only=false installed=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help|-h) usage; exit 0 ;;
@@ -329,12 +361,23 @@ main() {
     exit 0
   fi
 
-  choose_identity
-  if needs_build; then
-    build
-    assemble_app "$LAUNCH_ID"
-  elif ! app_is_current; then
-    assemble_app "$LAUNCH_ID"
+  if [ -d "$INSTALLED_APP" ]; then
+    installed=true
+    APP_DIR="$INSTALLED_APP"
+    APP_BIN="$APP_DIR/Contents/MacOS/DeskFloater"
+    [ -x "$APP_BIN" ] || die "installed app has no executable: $APP_BIN"
+    [ -x "$LSREGISTER" ] || die "cannot select installed app without lsregister: $LSREGISTER"
+    remember_home || die "could not save the installed app's Firstmate home"
+    forget_other_copies || die "could not select the installed app for macOS reopening"
+    "$LSREGISTER" -f "$APP_DIR" || die "could not register installed app: $APP_DIR"
+  else
+    choose_identity
+    if needs_build; then
+      build
+      assemble_app "$LAUNCH_ID"
+    elif ! app_is_current; then
+      assemble_app "$LAUNCH_ID"
+    fi
   fi
 
   export FM_HOME
@@ -345,7 +388,7 @@ main() {
     "$APP_BIN" >/dev/null 2>&1 &
     disown 2>/dev/null || true
   fi
-  forget_other_copies
+  [ "$installed" = true ] || forget_other_copies
 }
 
 main "$@"

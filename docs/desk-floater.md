@@ -43,8 +43,8 @@ Exactly one fleet brain remains: the primary already running in this home.
    bin/fm-desk-floater.sh
    ```
 
-   First launch builds the Swift package under `desk-floater/` into
-   `desk-floater/.build/` (gitignored) and opens the floating control.
+   When `/Applications/Starship Floater.app` exists, the launcher opens it without compiling or signing a source copy.
+   Otherwise it builds the Swift package under `desk-floater/` into `desk-floater/.build/` (gitignored) and opens the floating control.
    If any permission is missing, a setup window explains it and opens the right System Settings page (see [Permissions](#permissions)).
    The buttons work without Accessibility, the hotkeys and typing into other apps do not, and screenshots need Screen Recording.
 
@@ -68,8 +68,14 @@ The cask deliberately clears quarantine from this app only, bypassing Gatekeeper
 Accessibility, Microphone, Screen Recording and Terminal Automation permissions still apply.
 There is no auto-update; use `brew upgrade --cask starship-floater` after a new cask version is published.
 
+Launching with `bin/fm-desk-floater.sh` selects the installed app when present and saves the current code folder and `FM_HOME` in the per-user JSON below, so Finder, login items and Quit & Reopen keep serving the same home.
+Each such launch selects that home for future environment-free launches; the file is replaced atomically and is readable only by your user.
+It unregisters other copies of the launched identifier and registers the installed app, without modifying or deleting source bundles.
+An invalid installed bundle or failed registration stops the launch rather than falling back to a competing source copy.
+`--build-only` and `--release` remain explicit build operations and never launch or register their bundles.
+
 Finder and login items do not inherit shell exports.
-Create `~/Library/Application Support/Firstmate/desk-floater.json` with absolute paths before opening the installed app:
+To open the installed app directly before using the launcher, create `~/Library/Application Support/Firstmate/desk-floater.json` with absolute paths before opening the installed app:
 
 ```json
 {
@@ -256,6 +262,9 @@ To use another certificate, put its name or SHA-1 hash on one line in this home'
 If that certificate is missing, expired or fails to sign, the launcher says so and falls back to the "Apple Development" one, then to ad-hoc, and the floater still starts.
 Without a certificate the floater stays ad-hoc signed and the launcher says so: macOS then ties each grant to that one build, every rebuild (after any change to its code) asks again, and the badges come back.
 The first signed build is new to macOS too, so it is asked about once more.
+Moving from source to the installed app is expected to preserve grants when both use the same signing identity and `com.firstmate.desk-floater`; a formerly ad-hoc-signed copy or a different certificate requires fresh grants.
+macOS can still ask again after an app move or replacement; if it does, grant the installed Starship Floater entry rather than the old source copy.
+Removing quarantine does not grant any privacy permissions.
 When a build is asked about while Starship Floater already shows as switched on in that list, switch it off and on again, or remove it with the minus button and open the permissions window to add it back.
 
 ### Quit & Reopen
@@ -266,10 +275,11 @@ For an app outside a Firstmate folder, such as `/Applications/Starship Floater.a
 Without a valid location it says so and quits rather than guessing.
 
 macOS can reopen any copy it knows under the app's identifier.
-The launched source app and the prebuilt release share that identity; quit the source app before switching to the installed app, and open `/Applications/Starship Floater.app` explicitly the first time.
+The launched source app and the prebuilt release share that identity; quit a running source copy before switching to the installed app.
+The launcher selects `/Applications/Starship Floater.app` whenever present and makes macOS forget other copies of the launched identifier before registering the installed app.
 Use one copy at a time.
 A copy built with `--build-only`, such as one a worker builds to check a change, goes to its own `desk-floater/.build/Starship Floater (test build).app` with an identifier of its own and stays ad-hoc signed, so it never changes the floater you launched and macOS never reopens it in place of this home's floater.
-Each launch also makes macOS forget any other copy it knows under the floater's identifier, such as one built by an older version of the launcher, which takes a few seconds after the floater is already up.
+Without an installed app, each source launch also makes macOS forget other copies under the floater's identifier, such as one built by an older version of the launcher, a few seconds after the floater is already up.
 
 ## How transcripts reach Firstmate
 
