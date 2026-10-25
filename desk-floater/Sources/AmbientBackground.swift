@@ -24,20 +24,21 @@ struct AmbientPointField {
 
     static func points(size: CGSize, time: TimeInterval) -> [Point] {
         guard size.width > 0, size.height > 0 else { return [] }
-        let breath = 1 + 0.06 * sin(time * .pi / 6)
+        let phase = time * 2 * .pi / 5.5
+        let breath = 1 + 0.15 * sin(phase)
         return (0..<11).flatMap { row in
             let depth = Double(row) / 10
             let perspective = 0.52 + 0.48 * depth
             return (0..<24).map { column in
                 let x = Double(column) / 23
-                let wave = sin(x * 3 * .pi + depth * 2.4 - time * .pi / 6)
+                let wave = sin(x * 3 * .pi + depth * 2.4 - phase)
                     * exp(-pow((x - 0.5) * 1.7, 2))
                 return Point(
                     position: CGPoint(
                         x: size.width * (0.5 + (x - 0.5) * perspective * 0.96),
                         y: size.height * (0.18 + depth * 0.64 + wave * 0.10 * perspective * breath)),
                     radius: 0.35 + 0.45 * depth,
-                    opacity: (0.07 + 0.15 * depth) * breath,
+                    opacity: (0.07 + 0.15 * depth) * 2.5 * breath,
                     hue: min(2, column / 8))
             }
         }
@@ -130,7 +131,7 @@ final class AmbientBackgroundView: NSView {
             && !reduceMotion && !reduceTransparency
         if animate && timer == nil {
             lastFrame = CACurrentMediaTime()
-            let timer = Timer(timeInterval: 1.0 / 6, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     let now = CACurrentMediaTime()
@@ -139,7 +140,7 @@ final class AmbientBackgroundView: NSView {
                     self.refreshDrawing()
                 }
             }
-            timer.tolerance = 0.04
+            timer.tolerance = 0.01
             RunLoop.main.add(timer, forMode: .common)
             self.timer = timer
         } else if !animate {
@@ -162,13 +163,17 @@ private final class AmbientPointLayer: CALayer {
     var time: TimeInterval = 0
     var dark = true
 
+    // Reuse the icon's wave colors instead of allocating a color per point per frame.
+    private static let colors = [CGColor(srgbRed: 0.21, green: 0.89, blue: 1, alpha: 1),
+                                 CGColor(srgbRed: 0.56, green: 0.48, blue: 1, alpha: 1),
+                                 CGColor(srgbRed: 1, green: 0.37, blue: 0.82, alpha: 1)]
+
     override func draw(in context: CGContext) {
-        // Cyan, violet and pink from the icon's voice wave, without its bright glow.
-        let colors = [NSColor(srgbRed: 0.21, green: 0.89, blue: 1, alpha: 1),
-                      NSColor(srgbRed: 0.56, green: 0.48, blue: 1, alpha: 1),
-                      NSColor(srgbRed: 1, green: 0.37, blue: 0.82, alpha: 1)]
+        context.saveGState()
+        defer { context.restoreGState() }
         for point in AmbientPointField.points(size: bounds.size, time: time) {
-            context.setFillColor(colors[point.hue].withAlphaComponent(point.opacity * (dark ? 1 : 0.85)).cgColor)
+            context.setFillColor(Self.colors[point.hue])
+            context.setAlpha(point.opacity * (dark ? 1 : 0.85))
             context.fillEllipse(in: CGRect(x: point.position.x - point.radius, y: point.position.y - point.radius,
                                           width: point.radius * 2, height: point.radius * 2))
         }

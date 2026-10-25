@@ -11,7 +11,7 @@ final class AmbientBackgroundTests: XCTestCase {
             for point in points {
                 XCTAssertTrue(point.position.x.isFinite && point.position.y.isFinite)
                 XCTAssertTrue(CGRect(origin: .zero, size: size).contains(point.position))
-                XCTAssertLessThan(point.opacity, 0.24)
+                XCTAssertLessThan(point.opacity, 0.64)
                 XCTAssertLessThanOrEqual(point.radius, 0.8)
                 XCTAssertTrue((0...2).contains(point.hue))
             }
@@ -23,16 +23,21 @@ final class AmbientBackgroundTests: XCTestCase {
         XCTAssertTrue(AmbientPointField.points(size: .zero, time: 0).isEmpty)
     }
 
-    func testWavesTravelSlowlyAndBreatheOverTwelveSeconds() {
+    func testVisibleWavesAndFifteenPercentBreathingRepeatEveryFiveAndAHalfSeconds() {
         let size = CGSize(width: 116, height: 76)
         let first = AmbientPointField.points(size: size, time: 0)
-        let later = AmbientPointField.points(size: size, time: 2)
-        let cycle = AmbientPointField.points(size: size, time: 12)
+        let later = AmbientPointField.points(size: size, time: 0.5)
+        let cycle = AmbientPointField.points(size: size, time: 5.5)
+        let peak = AmbientPointField.points(size: size, time: 5.5 / 4)
+        let trough = AmbientPointField.points(size: size, time: 5.5 * 3 / 4)
+        XCTAssertEqual(first.last!.opacity, 0.55, accuracy: 0.0001)
+        XCTAssertEqual(peak.last!.opacity / first.last!.opacity, 1.15, accuracy: 0.0001)
+        XCTAssertEqual(trough.last!.opacity / first.last!.opacity, 0.85, accuracy: 0.0001)
         XCTAssertNotEqual(first.map(\.position), later.map(\.position))
         for (a, b) in zip(first, later) {
             XCTAssertEqual(a.position.x, b.position.x)
             XCTAssertLessThan(abs(a.position.y - b.position.y), size.height * 0.12)
-            XCTAssertLessThan(abs(a.opacity - b.opacity), 0.014)
+            XCTAssertLessThan(abs(a.opacity - b.opacity), 0.05)
         }
         for (a, b) in zip(first, cycle) {
             XCTAssertEqual(a.position.y, b.position.y, accuracy: 0.0001)
