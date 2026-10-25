@@ -7,6 +7,8 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-status-bar)
 HOME_FIX="$TMP_ROOT/home"
+# Never read the operator's Herdr sound settings in fixture renderers.
+export HERDR_CONFIG_PATH="$TMP_ROOT/no-herdr-config.toml"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 mkdir -p "$HOME_FIX/state"
 
@@ -1733,6 +1735,33 @@ SH
   pass "status bar: an over-long border row loses whole fields visibly and keeps its role marker"
 }
 
+test_herdr_sound_field() {
+  local config="$TMP_ROOT/sound.toml" raw out
+  reset_fleet
+  printf '[ui.sound]\nenabled = true\n' > "$config"
+  out=$(FM_BACKEND=herdr HERDR_CONFIG_PATH="$config" render | strip_ansi)
+  assert_contains "$out" '💤-- 🔔' "enabled sound beside AFK"
+  printf '[ui.sound] # comment\nenabled = false # muted\n[other]\nenabled = true\n' > "$config"
+  raw=$(FM_BACKEND=herdr HERDR_CONFIG_PATH="$config" render)
+  assert_contains "$raw" $'\033[2m🔕\033[0m' "disabled sound is dim"
+  printf '[ui.sound]\nvolume = 50\n' > "$config"
+  out=$(FM_BACKEND=herdr HERDR_CONFIG_PATH="$config" render | strip_ansi)
+  assert_contains "$out" '🔔' "absent key defaults on"
+  printf '[other]\nenabled = false\n' > "$config"
+  out=$(FM_BACKEND=herdr HERDR_CONFIG_PATH="$config" render | strip_ansi)
+  assert_contains "$out" '🔔' "absent section defaults on"
+  out=$(FM_BACKEND=tmux HERDR_CONFIG_PATH="$config" render | strip_ansi)
+  assert_not_contains "$out" '🔔' "other backend has no sound field"
+  out=$(FM_BACKEND=herdr HERDR_CONFIG_PATH="$config.missing" render | strip_ansi)
+  assert_not_contains "$out" '🔔' "missing file has no sound field"
+  mkdir -p "$TMP_ROOT/xdg/herdr"
+  printf '[ui.sound]\nenabled = false\n' > "$TMP_ROOT/xdg/herdr/config.toml"
+  out=$(FM_BACKEND=herdr HERDR_CONFIG_PATH='' XDG_CONFIG_HOME="$TMP_ROOT/xdg" render | strip_ansi)
+  assert_contains "$out" '🔕' "XDG config path is respected"
+  pass "status bar: Herdr sound is live, defaults on, and absent outside readable Herdr config"
+}
+
+test_herdr_sound_field
 test_contract_order_and_fleet_projection
 test_the_headline_is_live_agents_and_stopped_records_are_visible
 test_task_records_are_never_counted_as_running_workers

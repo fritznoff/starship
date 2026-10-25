@@ -8,7 +8,7 @@ This file is the single owner of the Firstmate primary status-bar contract.
 After ANSI styling is removed, every renderer uses this field order:
 
 ```text
-⚓ <model>·<effort> [<account-role>] │ 🧠<context-used> ⚡<provider-quota-used> │ <workers> │ 👁 <supervision> │ $<session-cost> │ 💤<afk>
+⚓ <model>·<effort> [<account-role>] │ 🧠<context-used> ⚡<provider-quota-used> │ <workers> │ 👁 <supervision> │ $<session-cost> │ 💤<afk> [🔔/🔕]
 ```
 
 The separator is one space, a dim `│`, and one space.
@@ -25,6 +25,10 @@ Width-constrained surfaces clip or truncate the canonical line without wrapping 
 | `👁 supervision` | `watching` while `state/.last-watcher-beat` is under 180 seconds old. | Bright-red `not watching` when the beacon is missing, unreadable, or 180 seconds old or more; dim `idle` instead while the home holds no task or second-mate record and no registered check. |
 | `$ cost` | Cumulative cost in US dollars for the current orchestrator session, rounded to two decimals. | `$--` when the orchestrator does not expose cost. |
 | `💤 AFK` | Whether the Firstmate home is in away mode. | Dim `💤--` when away mode is off. |
+
+The optional sound field beside AFK shows 🔔 when Herdr notification sound is enabled and dim 🔕 when disabled.
+It reads `[ui.sound] enabled` from `${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}` on each render, defaulting to enabled when the key or section is absent.
+It is omitted for other backends or an unreadable or missing file; it neither changes settings nor reflects per-agent overrides.
 
 ## Fleet fields
 

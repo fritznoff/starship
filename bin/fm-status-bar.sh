@@ -349,6 +349,8 @@ X=$'\033[0m'
 
 # shellcheck source=bin/fm-fleet-status-lib.sh
 . "$FM_ROOT/bin/fm-fleet-status-lib.sh"
+# shellcheck source=bin/fm-backend.sh
+. "$FM_ROOT/bin/fm-backend.sh"
 
 # Fleet fields, from bin/fm-fleet-status-lib.sh. This used to count every meta
 # file as a running ship and fold each status log's last line into paused and
@@ -416,6 +418,34 @@ fleet_phrase() {
   local words=$4
   [ "$1" -ne 1 ] || words=$3
   fleet_part="${fleet_part:+$fleet_part${D},${X} }${2}${1} ${words}${X}"
+}
+
+# Local config only: never ask the Herdr server during a render.
+herdr_sound_field() {
+  local backend config enabled
+  if [ -n "$FOLLOW_PANE" ]; then
+    backend=$FOLLOW_BACKEND
+  else
+    backend=$(fm_backend_name 2>/dev/null)
+  fi
+  [ "$backend" = herdr ] || return 0
+  config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
+  [ -f "$config" ] && [ -r "$config" ] || return 0
+  enabled=$(awk '
+    BEGIN { enabled = "true" }
+    { sub(/#.*/, ""); gsub(/^[ \t]+|[ \t\r]+$/, "") }
+    /^\[/ { sound = ($0 ~ /^\[[ \t]*ui[ \t]*\.[ \t]*sound[ \t]*\]$/); next }
+    sound && /^enabled[ \t]*=/ {
+      sub(/^enabled[ \t]*=[ \t]*/, "")
+      if ($0 == "true" || $0 == "false") enabled = $0
+    }
+    END { print enabled }
+  ' "$config" 2>/dev/null) || return 0
+  if [ "$enabled" = false ]; then
+    printf ' %s🔕%s' "$D" "$X"
+  else
+    printf ' 🔔'
+  fi
 }
 
 render_once() {
@@ -503,7 +533,7 @@ render_once() {
   printf '%s%s%s %s%s%s%s%s%s%s%s' \
     "$anchor" "$separator" "$context_part" "$quota_part" \
     "$separator" "$fleet_part" "$separator" "$watch_part" \
-    "$separator" "$cost_part" "$separator$afk_part"
+    "$separator" "$cost_part" "$separator$afk_part$(herdr_sound_field)"
 }
 
 # Herdr's border title is stored, and silently clipped, at 80 CODEPOINTS, with
