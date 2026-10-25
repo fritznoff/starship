@@ -257,8 +257,10 @@ build() {
 needs_build() {
   [ ! -x "$RELEASE_BIN" ] && return 0
   [ ! -x "$APP_BIN" ] && return 0
-  [ "$PKG/Sources/DeskFloater.swift" -nt "$APP_BIN" ] && return 0
-  [ "$PKG/Sources/Permissions.swift" -nt "$APP_BIN" ] && return 0
+  local source
+  for source in "$PKG"/Sources/*.swift; do
+    [ "$source" -nt "$APP_BIN" ] && return 0
+  done
   [ "$PKG/Package.swift" -nt "$APP_BIN" ] && return 0
   [ "$ICON_SRC" -nt "$APP_BIN" ] && return 0
   return 1

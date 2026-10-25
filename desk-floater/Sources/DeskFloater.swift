@@ -2011,6 +2011,7 @@ final class FloaterModel: ObservableObject {
 
 struct FloaterView: View {
     @ObservedObject var model: FloaterModel
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let mover: WindowMover
 
     private let mainSize: CGFloat = 36
@@ -2086,7 +2087,13 @@ struct FloaterView: View {
         .padding(6)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.black.opacity(0.55))
+                .fill(.black.opacity(reduceTransparency ? 1 : 0.55))
+                .overlay {
+                    AmbientBackground()
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 1)

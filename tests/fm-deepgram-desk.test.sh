@@ -846,6 +846,11 @@ test_floater_build_only_leaves_the_launched_app_alone() {
   out=$(run_floater "$fx" --build-only) || fail "permissions rebuild failed: $out"
   assert_equals 3 "$(grep -c build "$fx/swift.log")" "changing only permissions rebuilds the app"
   [ ! -s "$fx/tools.log" ] || fail "permissions rebuild changed signing"
+  sleep 1
+  touch "$fx/root/desk-floater/Sources/AmbientBackground.swift"
+  out=$(run_floater "$fx" --build-only) || fail "background rebuild failed: $out"
+  assert_equals 4 "$(grep -c build "$fx/swift.log")" "changing only the ambient background rebuilds the app"
+  [ ! -s "$fx/tools.log" ] || fail "background rebuild changed signing"
   cmp -s "$launched/Contents/MacOS/DeskFloater" "$fx/launched.bin" || fail "--build-only rewrote the launched binary or its signature"
   cmp -s "$launched/Contents/Info.plist" "$fx/launched.plist" || fail "--build-only rewrote the launched bundle's Info.plist"
   [ ! -s "$fx/open.log" ] || fail "--build-only launched the app"
