@@ -312,12 +312,6 @@ deliver() {
     || note "transcript saved but wake append failed; primary will see it on next drain"
   ring_mailbox "$path"
 
-  # Best-effort macOS notice so a human at the desk knows something landed.
-  if command -v osascript >/dev/null 2>&1; then
-    osascript -e 'display notification "Desk voice transcript ready" with title "Firstmate"' \
-      >/dev/null 2>&1 || true
-  fi
-
   printf '%s\n' "$path"
 }
 
