@@ -22,6 +22,30 @@ final class PermissionTests: XCTestCase {
         }
     }
 
+    func testOnlyRequiredPermissionsTriggerSetup() {
+        var states = Dictionary(uniqueKeysWithValues: FloaterPermission.allCases.map { ($0, PermissionState.granted) })
+        for state in [PermissionState.missing, .notDetermined, .unavailable] {
+            states[.automation] = state
+            XCTAssertFalse(FloaterPermission.needsSetup(states))
+        }
+        states.removeValue(forKey: .automation)
+        XCTAssertFalse(FloaterPermission.needsSetup(states))
+        for permission in [FloaterPermission.microphone, .accessibility, .screenRecording] {
+            for state in [PermissionState.missing, .notDetermined, .unavailable] {
+                states[permission] = state
+                XCTAssertTrue(FloaterPermission.needsSetup(states))
+            }
+            states[permission] = .granted
+        }
+        XCTAssertEqual(FloaterPermission.automation.title, "Control Terminal (Optional)")
+        XCTAssertEqual(FloaterPermission.automation.why, "Only for dictation into Apple Terminal's Firstmate tab")
+    }
+
+    func testAutomationOnlyAppearsWhenTerminalIsInstalled() {
+        XCTAssertEqual(FloaterPermission.visible(terminalInstalled: true), FloaterPermission.allCases)
+        XCTAssertEqual(FloaterPermission.visible(terminalInstalled: false), [.microphone, .accessibility, .screenRecording])
+    }
+
     func testMicrophoneStatesDistinguishFirstPromptFromDenied() {
         XCTAssertEqual(PermissionState.microphone(.authorized), .granted)
         XCTAssertEqual(PermissionState.microphone(.notDetermined), .notDetermined)

@@ -239,10 +239,12 @@ Nothing is sent anywhere but to this home's Firstmate.
 
 ## Permissions
 
-The permissions window opens at launch when any grant is missing or cannot yet be checked.
+The permissions window opens at launch when any required grant is missing or cannot yet be checked.
 Open it again from the microphone menu bar icon's **Permissions…** item or either orange "!" badge; microphone denial also opens it.
 It is a populated setup window, not a blank Settings scene.
-Each row shows why access is used and whether it is granted, missing, not requested, or (for a stopped or unreachable Terminal) not yet checkable.
+Each row shows why access is used and whether it is granted; required permissions also distinguish missing from not requested.
+Control Terminal is marked optional rather than missing when it is not enabled.
+Control Terminal is hidden when Apple Terminal is not installed, and never triggers setup reminders or missing-permission badges.
 The rows refresh every second while the window is open and when the floater regains focus.
 
 | Permission | Needed for | Open Settings behavior |
@@ -250,7 +252,7 @@ The rows refresh every second while the window is open and when the floater rega
 | Microphone | Every capture | Requests the native Allow prompt if not yet decided, then opens Privacy & Security, Microphone. |
 | Accessibility | Activation chord, hotkeys, and pasting dictation into other apps | Requests access and opens Privacy & Security, Accessibility. |
 | Screen & System Audio Recording | Screenshots only, not system audio | Requests access and opens Privacy & Security, Screen & System Audio Recording. |
-| Automation (Terminal) | Recognising dictation into the Firstmate chat | Opens Terminal if needed, requests the native Allow prompt if not yet decided, then opens Privacy & Security, Automation. Enable Terminal under the floater. |
+| Control Terminal (optional) | Only for dictation into Apple Terminal's Firstmate tab | Opens Terminal if needed, requests the native Allow prompt if not yet decided, then opens Privacy & Security, Automation. Enable Terminal under the floater. |
 
 After **Open Settings**, a small floating helper follows the System Settings window.
 For Accessibility and Screen Recording, drag the floater's icon/name from that bar into the permission list, then switch it on.

@@ -44,7 +44,7 @@ enum FloaterPermission: String, CaseIterable, Identifiable {
         case .microphone: return "Microphone"
         case .accessibility: return "Accessibility"
         case .screenRecording: return "Screen & System Audio Recording"
-        case .automation: return "Automation - Terminal"
+        case .automation: return "Control Terminal (Optional)"
         }
     }
 
@@ -53,7 +53,7 @@ enum FloaterPermission: String, CaseIterable, Identifiable {
         case .microphone: return "Records your voice only when you ask to talk or dictate."
         case .accessibility: return "Reads the activation chord and hotkeys, and pastes dictation."
         case .screenRecording: return "Takes screenshots only when you ask. System audio is not captured."
-        case .automation: return "Checks Terminal's front tab so dictation sends only to the Firstmate chat."
+        case .automation: return "Only for dictation into Apple Terminal's Firstmate tab"
         }
     }
 
@@ -66,6 +66,16 @@ enum FloaterPermission: String, CaseIterable, Identifiable {
         case .automation: pane = "Privacy_Automation"
         }
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
+    }
+
+    var isRequired: Bool { self != .automation }
+
+    static func visible(terminalInstalled: Bool) -> [Self] {
+        allCases.filter { $0 != .automation || terminalInstalled }
+    }
+
+    static func needsSetup(_ states: [Self: PermissionState]) -> Bool {
+        allCases.contains { $0.isRequired && states[$0] != .granted }
     }
 
     var supportsAppDrop: Bool { self == .accessibility || self == .screenRecording }
@@ -101,6 +111,11 @@ final class PermissionsController: NSObject, ObservableObject, NSWindowDelegate 
     }
 
     @Published private(set) var states: [FloaterPermission: PermissionState] = [:]
+    var visiblePermissions: [FloaterPermission] {
+        FloaterPermission.visible(terminalInstalled:
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") != nil)
+    }
+
     @Published private(set) var requesting = false
     @Published private(set) var error: String?
     private var window: NSWindow?
@@ -123,7 +138,7 @@ final class PermissionsController: NSObject, ObservableObject, NSWindowDelegate 
         NotificationCenter.default.addObserver(self, selector: #selector(refresh),
                                                name: NSApplication.didBecomeActiveNotification, object: nil)
         refresh()
-        if states.values.contains(where: { $0 != .granted }) { show() }
+        if FloaterPermission.needsSetup(states) { show() }
     }
 
     @objc func show() {
@@ -153,7 +168,7 @@ final class PermissionsController: NSObject, ObservableObject, NSWindowDelegate 
     }
 
     @objc private func refresh() {
-        states = Dictionary(uniqueKeysWithValues: FloaterPermission.allCases.map { ($0, $0.state()) })
+        states = Dictionary(uniqueKeysWithValues: visiblePermissions.map { ($0, $0.state()) })
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -286,15 +301,18 @@ private struct PermissionsView: View {
             Text("Set up \(PermissionsController.appName)").font(.title2.bold())
             Text("Choose a permission to open its Privacy & Security page. You stay in control of every grant.")
                 .foregroundStyle(.secondary)
-            ForEach(FloaterPermission.allCases) { permission in
+            ForEach(controller.visiblePermissions) { permission in
                 let state = controller.states[permission] ?? .unavailable
                 HStack(spacing: 12) {
-                    Image(systemName: state == .granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                        .foregroundStyle(state == .granted ? .green : .orange)
+                    Image(systemName: state == .granted ? "checkmark.circle.fill"
+                          : permission.isRequired ? "exclamationmark.circle.fill" : "info.circle")
+                        .foregroundStyle(state == .granted ? Color.green
+                                         : permission.isRequired ? Color.orange : Color.secondary)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(permission.title).font(.headline)
                         Text(permission.why).font(.caption).foregroundStyle(.secondary)
-                        Text(state.label).font(.caption.bold())
+                        Text(!permission.isRequired && state != .granted ? "Optional - not enabled" : state.label)
+                            .font(.caption.bold())
                     }
                     Spacer()
                     Button("Open Settings") { controller.open(permission) }
