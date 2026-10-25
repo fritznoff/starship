@@ -2012,6 +2012,7 @@ final class FloaterModel: ObservableObject {
 struct FloaterView: View {
     @ObservedObject var model: FloaterModel
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage(AmbientSettings.defaultsKey) private var animatedBackground = true
     let mover: WindowMover
 
     private let mainSize: CGFloat = 36
@@ -2085,14 +2086,21 @@ struct FloaterView: View {
             }
         }
         .padding(6)
-        .background(
+        .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.black.opacity(reduceTransparency ? 1 : 0.55))
                 .overlay {
-                    AmbientBackground()
+                    if animatedBackground && !reduceTransparency {
+                        GeometryReader { proxy in
+                            let rowHeight = model.voiceOutAvailable ? max(mainSize, controlSize * 2 + controlSpacing) : mainSize
+                            AmbientBackground(active: model.mode == .starting || model.mode == .recording,
+                                              center: CGPoint(x: proxy.size.width - 6 - rowWidth + mainSize / 2,
+                                                              y: proxy.size.height - 6 - rowHeight / 2))
+                        }
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
+                    }
                 }
                 .contentShape(Rectangle())
                 .gesture(
@@ -2100,7 +2108,7 @@ struct FloaterView: View {
                         .onChanged { _ in mover.drag() }
                         .onEnded { _ in mover.end() }
                 )
-        )
+        }
         .fixedSize()
         .onGeometryChange(for: CGSize.self) { proxy in
             proxy.size

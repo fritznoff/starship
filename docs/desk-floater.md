@@ -115,6 +115,13 @@ A warning identifies keys shared with the existing talk, dictation and screensho
 The floater ignores hotkeys while this window is open, so choosing keys cannot trigger a capture.
 Close the window to use the new shortcut.
 
+The same settings window has an **Animated background** switch, on by default and saved for each app channel.
+Switching it off removes the optional Metal module entirely, leaving a plain plate with no background computation.
+When enabled, a calm lattice fills the plate; starting talk or dictation pushes a ripple from the round button, and pointer movement stirs the pool in proportion to speed.
+Waves reflect at the edges, gradually settle, and stop drawing when calm or out of sight.
+Reduce Motion keeps a static lattice; Reduce Transparency removes it and makes the plate opaque.
+If Metal is unavailable, the controls still work over a plain plate.
+
 It also switches itself off after two minutes without use. Use means the chord, any hotkey, a click on the floater, and any recording, dictation, screenshot or message still being sent or waiting to be sent or retried; it never switches off under those, and the two minutes start again when they finish. Sending a message does not hide it.
 Without the Accessibility permission the chord cannot be read, so the floater stays in sight (with its "!" badge, see [Permissions](#permissions)) until the permission is granted, and then hides.
 The microphone is made ready when the floater appears, not at launch, so the first words after the chord are kept.

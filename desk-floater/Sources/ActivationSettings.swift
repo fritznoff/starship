@@ -70,6 +70,7 @@ final class ActivationSettingsWindow {
 
 private struct ActivationSettingsView: View {
     @State var bits: UInt
+    @AppStorage(AmbientSettings.defaultsKey) private var animatedBackground = true
     let apply: (ActivationShortcut) -> Void
 
     var body: some View {
@@ -94,6 +95,8 @@ private struct ActivationSettingsView: View {
             }
             Text("Shows or hides the floater; never sends a recording. Changes apply immediately.")
                 .font(.caption)
+            Toggle("Animated background", isOn: $animatedBackground)
+                .toggleStyle(.switch)
         }
         .padding(20)
         .frame(width: 440)

@@ -258,7 +258,7 @@ needs_build() {
   [ ! -x "$RELEASE_BIN" ] && return 0
   [ ! -x "$APP_BIN" ] && return 0
   local source
-  for source in "$PKG"/Sources/*.swift; do
+  for source in "$PKG"/Sources/*.swift "$PKG"/Ambient/*.swift; do
     [ "$source" -nt "$APP_BIN" ] && return 0
   done
   [ "$PKG/Package.swift" -nt "$APP_BIN" ] && return 0

@@ -851,6 +851,12 @@ test_floater_build_only_leaves_the_launched_app_alone() {
   out=$(run_floater "$fx" --build-only) || fail "background rebuild failed: $out"
   assert_equals 4 "$(grep -c build "$fx/swift.log")" "changing only the ambient background rebuilds the app"
   [ ! -s "$fx/tools.log" ] || fail "background rebuild changed signing"
+  sleep 1
+  mkdir -p "$fx/root/desk-floater/Ambient"
+  touch "$fx/root/desk-floater/Ambient/WaveGPU.swift"
+  out=$(run_floater "$fx" --build-only) || fail "GPU module rebuild failed: $out"
+  assert_equals 5 "$(grep -c build "$fx/swift.log")" "changing only the optional GPU module rebuilds the app"
+  [ ! -s "$fx/tools.log" ] || fail "GPU module rebuild changed signing"
   cmp -s "$launched/Contents/MacOS/DeskFloater" "$fx/launched.bin" || fail "--build-only rewrote the launched binary or its signature"
   cmp -s "$launched/Contents/Info.plist" "$fx/launched.plist" || fail "--build-only rewrote the launched bundle's Info.plist"
   [ ! -s "$fx/open.log" ] || fail "--build-only launched the app"
