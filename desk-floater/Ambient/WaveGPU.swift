@@ -1,8 +1,21 @@
 import AppKit
 import MetalKit
 
+public struct AmbientConfiguration: Equatable {
+    public let damping: Float
+    public let dotSize: Float
+    public let dotSpacing: Float
+
+    public init(damping: Float, dotSize: Float, dotSpacing: Float) {
+        self.damping = damping.isFinite ? min(2, max(0.01, damping)) : 1
+        self.dotSize = dotSize.isFinite ? min(4, max(0.4, dotSize)) : 1
+        self.dotSpacing = dotSpacing.isFinite ? min(10, max(1, dotSpacing)) : 3
+    }
+}
+
 @MainActor
 public protocol AmbientSurface: AnyObject {
+    func configure(_ configuration: AmbientConfiguration)
     func start()
     func stop()
     func impulse(at point: CGPoint, strength: Float)
@@ -10,19 +23,33 @@ public protocol AmbientSurface: AnyObject {
 }
 
 @MainActor
-public func makeAmbientSurface() -> (NSView & AmbientSurface)? {
+public func makeAmbientSurface(configuration: AmbientConfiguration) -> (NSView & AmbientSurface)? {
     guard let device = MTLCreateSystemDefaultDevice() else { return nil }
-    do { return try WavePoolView(device: device) }
+    do { return try WavePoolView(device: device, configuration: configuration) }
     catch { NSLog("Optional ambient background unavailable: %@", String(describing: error)); return nil }
 }
 
 struct PoolParameters {
-    var grid = SIMD2<UInt32>(32, 28)
+    var grid: SIMD2<UInt32>
     var size: SIMD2<Float>
+    var visibleSize: SIMD2<Float>
+    var renderGrid: SIMD2<UInt32>
     var dt: Float = 1 / 60
-    var damping: Float = 0.8
+    var damping: Float
     var count: UInt32 = 0
-    var dark: Float = 1
+    var dark: Float
+    var dotSize: Float
+    var dotSpacing: Float
+
+    init(visibleSize: SIMD2<Float>, configuration: AmbientConfiguration, domainScale: Float = 2.5,
+         grid: SIMD2<UInt32> = SIMD2(80, 70), dark: Float = 1) {
+        self.grid = grid
+        self.visibleSize = SIMD2(max(visibleSize.x, 32), max(visibleSize.y, 28))
+        size = self.visibleSize * domainScale
+        renderGrid = SIMD2(UInt32(ceil(self.visibleSize.x / configuration.dotSpacing)),
+                           UInt32(ceil(self.visibleSize.y / configuration.dotSpacing)))
+        damping = configuration.damping; dotSize = configuration.dotSize; dotSpacing = configuration.dotSpacing; self.dark = dark
+    }
 }
 
 struct PoolImpulse {
@@ -38,30 +65,36 @@ final class WaveGPU {
     let queue: MTLCommandQueue
     let stepPipeline: MTLComputePipelineState
     let levelPipeline: MTLComputePipelineState
+    let totalsPipeline: MTLComputePipelineState
     let renderPipeline: MTLRenderPipelineState
     var current: MTLBuffer
     var other: MTLBuffer
     let energy: MTLBuffer
+    let mean: MTLBuffer
     var gpuSeconds: TimeInterval = 0
     var frames = 0
-    static let count = 32 * 28
+    static let count = 80 * 70
 
     init(device: MTLDevice) throws {
         self.device = device
         guard let queue = device.makeCommandQueue(),
               let a = device.makeBuffer(length: Self.count * MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared),
               let b = device.makeBuffer(length: a.length, options: .storageModeShared),
-              let energy = device.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared)
+              let energy = device.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared),
+              let mean = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared)
         else { throw NSError(domain: "FloaterAmbient", code: 1) }
-        self.queue = queue; current = a; other = b; self.energy = energy
+        self.queue = queue; current = a; other = b; self.energy = energy; self.mean = mean
         memset(a.contents(), 0, a.length); memset(b.contents(), 0, b.length)
         energy.contents().storeBytes(of: Float(0), as: Float.self)
         let library = try device.makeLibrary(source: WaveShaders.source, options: nil)
         guard let step = library.makeFunction(name: "waveStep"), let level = library.makeFunction(name: "levelPool"),
+              let totals = library.makeFunction(name: "poolTotals"),
               let vertex = library.makeFunction(name: "lattice"), let fragment = library.makeFunction(name: "droplet")
         else { throw NSError(domain: "FloaterAmbient", code: 2) }
         stepPipeline = try device.makeComputePipelineState(function: step)
         levelPipeline = try device.makeComputePipelineState(function: level)
+        totalsPipeline = try device.makeComputePipelineState(function: totals)
+        guard totalsPipeline.maxTotalThreadsPerThreadgroup >= 256 else { throw NSError(domain: "FloaterAmbient", code: 3) }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex; descriptor.fragmentFunction = fragment
         let color = descriptor.colorAttachments[0]!
@@ -77,6 +110,7 @@ final class WaveGPU {
         blit.fill(buffer: current, range: 0..<current.length, value: 0)
         blit.fill(buffer: other, range: 0..<other.length, value: 0)
         blit.fill(buffer: energy, range: 0..<energy.length, value: 0)
+        blit.fill(buffer: mean, range: 0..<mean.length, value: 0)
         blit.endEncoding(); command.commit()
     }
 
@@ -84,6 +118,7 @@ final class WaveGPU {
         guard let encoder = command.makeComputeCommandEncoder() else { return }
         var p = parameters
         p.dt = min(max(duration, 0), 0.1) / 4
+        let count = Int(p.grid.x * p.grid.y)
         encoder.setComputePipelineState(stepPipeline)
         // Metal requires a valid binding even on a frame without new impulses.
         let inputs = impulses.isEmpty ? [PoolImpulse(center: .zero, radius: 0, strength: 0)] : impulses
@@ -92,16 +127,21 @@ final class WaveGPU {
             p.count = substep == 0 ? UInt32(impulses.count) : 0
             encoder.setBuffer(current, offset: 0, index: 0); encoder.setBuffer(other, offset: 0, index: 1)
             encoder.setBytes(&p, length: MemoryLayout<PoolParameters>.stride, index: 2)
-            encoder.dispatchThreads(MTLSize(width: Self.count, height: 1, depth: 1),
+            encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: min(128, stepPipeline.maxTotalThreadsPerThreadgroup), height: 1, depth: 1))
             encoder.memoryBarrier(scope: .buffers)
             swap(&current, &other)
         }
-        encoder.setComputePipelineState(levelPipeline)
+        encoder.setComputePipelineState(totalsPipeline)
         encoder.setBuffer(current, offset: 0, index: 0)
         encoder.setBytes(&p, length: MemoryLayout<PoolParameters>.stride, index: 1)
-        encoder.setBuffer(energy, offset: 0, index: 2)
-        encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        encoder.setBuffer(mean, offset: 0, index: 2)
+        encoder.setBuffer(energy, offset: 0, index: 3)
+        encoder.dispatchThreads(MTLSize(width: 256, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        encoder.memoryBarrier(scope: .buffers)
+        encoder.setComputePipelineState(levelPipeline)
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: min(128, levelPipeline.maxTotalThreadsPerThreadgroup), height: 1, depth: 1))
         encoder.endEncoding()
     }
 
@@ -112,7 +152,7 @@ final class WaveGPU {
         encoder.setVertexBuffer(current, offset: 0, index: 0)
         encoder.setVertexBytes(&p, length: MemoryLayout<PoolParameters>.stride, index: 1)
         encoder.setVertexBytes(&scale, length: MemoryLayout<Float>.size, index: 2)
-        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: Self.count)
+        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: Int(p.renderGrid.x * p.renderGrid.y))
         encoder.endEncoding()
     }
 }
@@ -120,6 +160,7 @@ final class WaveGPU {
 @MainActor
 final class WavePoolView: MTKView, AmbientSurface, MTKViewDelegate {
     let gpu: WaveGPU
+    private(set) var configuration: AmbientConfiguration
     private var enabled = false
     private var hasEnergy = false
     private var inFlight = false
@@ -132,7 +173,8 @@ final class WavePoolView: MTKView, AmbientSurface, MTKViewDelegate {
     private var locked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
     var isAnimating: Bool { !isPaused }
 
-    init(device: MTLDevice) throws {
+    init(device: MTLDevice, configuration: AmbientConfiguration) throws {
+        self.configuration = configuration
         gpu = try WaveGPU(device: device)
         super.init(frame: .zero, device: device)
         colorPixelFormat = .bgra8Unorm
@@ -170,6 +212,17 @@ final class WavePoolView: MTKView, AmbientSurface, MTKViewDelegate {
     override func viewDidUnhide() { super.viewDidUnhide(); refresh() }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 
+    func configure(_ configuration: AmbientConfiguration) {
+        guard self.configuration != configuration else { return }
+        self.configuration = configuration
+        generation += 1 // Redraw after any in-flight old configuration, even while calm.
+        // The vertex pass rebuilds its implicit lattice; the wave field is preserved.
+        needsDisplay = true
+    }
+    var parameters: PoolParameters {
+        PoolParameters(visibleSize: SIMD2(Float(bounds.width), Float(bounds.height)), configuration: configuration,
+                       dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 1 : 0)
+    }
     func start() { enabled = true; refresh() }
     func stop() {
         guard enabled else { return }
@@ -240,8 +293,7 @@ final class WavePoolView: MTKView, AmbientSurface, MTKViewDelegate {
               let command = gpu.queue.makeCommandBuffer() else { return }
         inFlight = true
         let now = CACurrentMediaTime()
-        let parameters = PoolParameters(size: SIMD2(Float(max(bounds.width, 32)), Float(max(bounds.height, 28))),
-                                        dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 1 : 0)
+        let parameters = self.parameters
         let moving = enabled && hasEnergy
         if moving {
             gpu.encodeStep(command, parameters: parameters, impulses: pending, duration: Float(min(now-lastFrame, 0.1)))

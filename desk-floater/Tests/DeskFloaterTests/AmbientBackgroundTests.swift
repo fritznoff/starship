@@ -2,9 +2,34 @@ import AppKit
 import SwiftUI
 import XCTest
 @testable import DeskFloater
+final class AmbientPreferenceTests: XCTestCase {
+    func testResetPersistsSliderDefaultsWithoutTurningAnimationOn() throws {
+        let suite = "ambient-sliders-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: AmbientSettings.defaultsKey)
+        defaults.set(0.04, forKey: AmbientSettings.dampingKey)
+        defaults.set(2.1, forKey: AmbientSettings.dotSizeKey)
+        defaults.set(5.0, forKey: AmbientSettings.dotSpacingKey)
+        AmbientSettings.resetSliders(in: defaults)
+        let reopened = try XCTUnwrap(UserDefaults(suiteName: suite))
+        XCTAssertFalse(reopened.bool(forKey: AmbientSettings.defaultsKey))
+        XCTAssertEqual(reopened.double(forKey: AmbientSettings.dampingKey), AmbientSettings.damping)
+        XCTAssertEqual(reopened.double(forKey: AmbientSettings.dotSizeKey), AmbientSettings.dotSize)
+        XCTAssertEqual(reopened.double(forKey: AmbientSettings.dotSpacingKey), AmbientSettings.dotSpacing)
+        XCTAssertTrue(AmbientSettings.dampingRange.contains(AmbientSettings.damping))
+        XCTAssertTrue(AmbientSettings.dotSizeRange.contains(AmbientSettings.dotSize))
+        XCTAssertTrue(AmbientSettings.dotSpacingRange.contains(AmbientSettings.dotSpacing))
+    }
+}
+
 #if canImport(FloaterAmbient)
 import MetalKit
 @testable import FloaterAmbient
+
+private let defaultPoolConfiguration = AmbientConfiguration(damping: Float(AmbientSettings.damping),
+                                                            dotSize: Float(AmbientSettings.dotSize),
+                                                            dotSpacing: Float(AmbientSettings.dotSpacing))
 
 @MainActor
 final class AmbientBackgroundTests: XCTestCase {
@@ -13,7 +38,7 @@ final class AmbientBackgroundTests: XCTestCase {
         return try WaveGPU(device: device)
     }
 
-    private func advance(_ gpu: WaveGPU, frames: Int, parameters: PoolParameters = PoolParameters(size: SIMD2(74, 66)),
+    private func advance(_ gpu: WaveGPU, frames: Int, parameters: PoolParameters = PoolParameters(visibleSize: SIMD2(74, 66), configuration: defaultPoolConfiguration),
                          impulses: [PoolImpulse] = []) throws {
         let command = try XCTUnwrap(gpu.queue.makeCommandBuffer())
         for i in 0..<frames { gpu.encodeStep(command, parameters: parameters, impulses: i == 0 ? impulses : [], duration: 1 / 15) }
@@ -35,15 +60,23 @@ final class AmbientBackgroundTests: XCTestCase {
         XCTAssertGreaterThan(first.map { abs($0.x) }.max()!, 0.05)
         try advance(gpu, frames: 30)
         XCTAssertNotEqual(state(gpu), first)
-        XCTAssertEqual(state(gpu).map(\.x).reduce(0, +), 0, accuracy: 0.0001, "pool volume stays constant")
-        try advance(gpu, frames: 900)
+        XCTAssertEqual(state(gpu).reduce(Double(0)) { $0 + Double($1.x) } / Double(WaveGPU.count),
+                       0, accuracy: 0.000001, "mean water level stays constant without a grid-size-dependent Float summation error")
+        try advance(gpu, frames: 300)
+        XCTAssertGreaterThan(gpu.energy.contents().load(as: Float.self), 0.003, "low damping must keep waves alive for multiple unseen-wall returns")
+        var seconds = 22
+        while gpu.energy.contents().load(as: Float.self) >= 0.003 && seconds < 180 {
+            try advance(gpu, frames: 15)
+            seconds += 1
+        }
         XCTAssertLessThan(gpu.energy.contents().load(as: Float.self), 0.003, "a damped pool must eventually stop drawing")
+        print("Default large-pool impulse crosses the idle threshold after approximately \(seconds) simulated seconds")
     }
 
     func testTheWallMatchesAMirroredPoolRatherThanWrappingOrAbsorbing() throws {
         let half = try renderer(), full = try renderer()
-        let halfParameters = PoolParameters(grid: SIMD2(16, 28), size: SIMD2(32, 56))
-        let fullParameters = PoolParameters(size: SIMD2(64, 56))
+        let halfParameters = PoolParameters(visibleSize: SIMD2(32, 56), configuration: defaultPoolConfiguration, domainScale: 1, grid: SIMD2(16, 28))
+        let fullParameters = PoolParameters(visibleSize: SIMD2(64, 56), configuration: defaultPoolConfiguration, domainScale: 1, grid: SIMD2(32, 28))
         try advance(half, frames: 30, parameters: halfParameters,
                     impulses: [PoolImpulse(center: SIMD2(13, 28), radius: 0, strength: 2)])
         try advance(full, frames: 30, parameters: fullParameters,
@@ -53,6 +86,45 @@ final class AmbientBackgroundTests: XCTestCase {
         for y in 0..<28 { for x in 0..<16 {
             XCTAssertEqual(a[y*16+x].x, b[y*32+16+x].x, accuracy: 0.0001)
         } }
+    }
+
+    func testUnseenWallsReturnInterferenceIntoTheVisibleCrop() throws {
+        let pool = try renderer(), larger = try renderer()
+        let p = PoolParameters(visibleSize: SIMD2(74, 66), configuration: defaultPoolConfiguration, grid: SIMD2(32, 28))
+        let q = PoolParameters(visibleSize: SIMD2(74, 66), configuration: defaultPoolConfiguration, domainScale: 5, grid: SIMD2(64, 56))
+        let impulse = [PoolImpulse(center: SIMD2(37, 33), radius: 18, strength: 2.6)]
+        try advance(pool, frames: 30, parameters: p, impulses: impulse)
+        try advance(larger, frames: 30, parameters: q, impulses: impulse)
+        func visibleSlopeDifference() -> Float {
+            let a = state(pool), b = state(larger)
+            var difference: Float = 0
+            for y in 8..<20 { for x in 9..<23 {
+                let small = a[y*32+x+1].x-a[y*32+x-1].x
+                let big = b[(y+14)*64+x+16+1].x-b[(y+14)*64+x+16-1].x
+                difference = max(difference, abs(small-big))
+            } }
+            return difference
+        }
+        XCTAssertLessThan(visibleSlopeDifference(), 0.0001, "before a wall return, both centre regions see the same outgoing wave")
+        try advance(pool, frames: 240, parameters: p)
+        try advance(larger, frames: 240, parameters: q)
+        XCTAssertGreaterThan(visibleSlopeDifference(), 0.001, "unseen closer walls must send interference back into the crop")
+    }
+
+    func testDotControlsChangeTheGPUPointCoverage() throws {
+        let gpu = try renderer()
+        func alpha(_ image: NSBitmapImageRep) -> Int {
+            let bytes = image.bitmapData!
+            return stride(from: 3, to: image.bytesPerRow*image.pixelsHigh, by: 4).reduce(0) { $0+Int(bytes[$1]) }
+        }
+        let baseline = alpha(try render(gpu))
+        let larger = AmbientConfiguration(damping: 0.12, dotSize: 2, dotSpacing: 2.5)
+        let sparse = AmbientConfiguration(damping: 0.12, dotSize: 1.35, dotSpacing: 6)
+        XCTAssertGreaterThan(alpha(try render(gpu, configuration: larger)), baseline*3/2)
+        XCTAssertLessThan(alpha(try render(gpu, configuration: sparse)), baseline/2)
+        let invalid = AmbientConfiguration(damping: .nan, dotSize: .infinity, dotSpacing: -10)
+        XCTAssertTrue(invalid.damping.isFinite && invalid.dotSize.isFinite)
+        XCTAssertGreaterThanOrEqual(invalid.dotSpacing, 1)
     }
 
     func testGPUPointRenderingCoversThePlateAndRefractsInsteadOfKeepingAFlatPalette() throws {
@@ -156,13 +228,29 @@ final class AmbientBackgroundTests: XCTestCase {
         XCTAssertFalse(pool.isAnimating, "launch is calm")
         model.mode = .starting; pump(0.2)
         XCTAssertTrue(try XCTUnwrap(findPool(host)).isAnimating, "a recording-button rising edge pushes a ring, including a newly laid-out background")
+        XCTAssertEqual(pool.parameters.size, SIMD2<Float>(185, 165), "the plate is only the middle of a larger pool")
+        let originalGrid = pool.parameters.renderGrid
+        defaults.set(0.04, forKey: AmbientSettings.dampingKey)
+        defaults.set(1.8, forKey: AmbientSettings.dotSizeKey)
+        defaults.set(4.0, forKey: AmbientSettings.dotSpacingKey)
+        pump(0.2)
+        let tuned = try XCTUnwrap(findPool(host))
+        XCTAssertTrue(tuned === pool, "tuning must not recreate the simulation or erase its waves")
+        XCTAssertEqual(tuned.configuration.damping, 0.04)
+        XCTAssertEqual(tuned.configuration.dotSize, 1.8)
+        XCTAssertEqual(tuned.parameters.renderGrid, SIMD2<UInt32>(19, 17))
+        XCTAssertNotEqual(tuned.parameters.renderGrid, originalGrid)
+        XCTAssertTrue(tuned.isAnimating)
+        AmbientSettings.resetSliders(in: defaults); pump(0.2)
+        XCTAssertEqual(tuned.configuration, defaultPoolConfiguration)
+        XCTAssertEqual(tuned.parameters.renderGrid, originalGrid)
         defaults.set(false, forKey: AmbientSettings.defaultsKey); pump(0.2)
         XCTAssertNil(findPool(host), "off must remove the module, not merely pause its drawing")
         XCTAssertEqual(host.frame.size, originalSize)
         defaults.set(true, forKey: AmbientSettings.defaultsKey)
         model.mode = .idle; pump(0.2)
         XCTAssertNotNil(findPool(host))
-        host.rootView = AnyView(AmbientHost(active: true, center: CGPoint(x: 24, y: 42), reduceMotion: true))
+        host.rootView = AnyView(AmbientHost(active: true, center: CGPoint(x: 24, y: 42), reduceMotion: true, configuration: defaultPoolConfiguration))
         pump(0.2)
         XCTAssertFalse(try XCTUnwrap(findPool(host)).isAnimating)
         XCTAssertTrue(state(try XCTUnwrap(findPool(host)).gpu).allSatisfy { $0 == .zero })
@@ -171,7 +259,7 @@ final class AmbientBackgroundTests: XCTestCase {
     private func visiblePool() throws -> (NSWindow, WavePoolView) {
         let app = NSApplication.shared; app.setActivationPolicy(.accessory); app.finishLaunching()
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
-        let view = try WavePoolView(device: device)
+        let view = try WavePoolView(device: device, configuration: defaultPoolConfiguration)
         view.frame = NSRect(x: 0, y: 0, width: 74, height: 66)
         let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.level = .floating; window.contentView = view
@@ -196,7 +284,7 @@ final class AmbientBackgroundTests: XCTestCase {
         }
     }
 
-    private func render(_ gpu: WaveGPU) throws -> NSBitmapImageRep {
+    private func render(_ gpu: WaveGPU, configuration: AmbientConfiguration = defaultPoolConfiguration) throws -> NSBitmapImageRep {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 148, height: 132, mipmapped: false)
         descriptor.storageMode = .shared; descriptor.usage = .renderTarget
         let texture = try XCTUnwrap(gpu.device.makeTexture(descriptor: descriptor))
@@ -205,7 +293,7 @@ final class AmbientBackgroundTests: XCTestCase {
         pass.colorAttachments[0].loadAction = .clear; pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         let command = try XCTUnwrap(gpu.queue.makeCommandBuffer())
-        gpu.encodeRender(command, pass: pass, parameters: PoolParameters(size: SIMD2(74, 66)), scale: 2)
+        gpu.encodeRender(command, pass: pass, parameters: PoolParameters(visibleSize: SIMD2(74, 66), configuration: configuration), scale: 2)
         command.commit(); command.waitUntilCompleted()
         XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 148, pixelsHigh: 132, bitsPerSample: 8,

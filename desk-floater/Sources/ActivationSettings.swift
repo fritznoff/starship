@@ -56,11 +56,13 @@ final class ActivationSettingsWindow {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 330),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 540),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Activation Shortcut"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ActivationSettingsView(bits: shortcut.bits, apply: apply))
+        let hosting = NSHostingView(rootView: ActivationSettingsView(bits: shortcut.bits, apply: apply))
+        window.contentView = hosting
+        window.setContentSize(NSSize(width: 440, height: max(540, hosting.fittingSize.height)))
         window.center()
         self.window = window
         window.makeKeyAndOrderFront(nil)
@@ -71,7 +73,21 @@ final class ActivationSettingsWindow {
 private struct ActivationSettingsView: View {
     @State var bits: UInt
     @AppStorage(AmbientSettings.defaultsKey) private var animatedBackground = true
+    @AppStorage(AmbientSettings.dampingKey) private var damping = AmbientSettings.damping
+    @AppStorage(AmbientSettings.dotSizeKey) private var dotSize = AmbientSettings.dotSize
+    @AppStorage(AmbientSettings.dotSpacingKey) private var dotSpacing = AmbientSettings.dotSpacing
     let apply: (ActivationShortcut) -> Void
+
+    private func ambientSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
+        VStack(spacing: 2) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: "%.2f", value.wrappedValue)).monospacedDigit()
+            }
+            Slider(value: value, in: range, step: step).accessibilityLabel(title)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -97,6 +113,11 @@ private struct ActivationSettingsView: View {
                 .font(.caption)
             Toggle("Animated background", isOn: $animatedBackground)
                 .toggleStyle(.switch)
+            ambientSlider("Damping", value: $damping, range: AmbientSettings.dampingRange, step: 0.02)
+            Text("Lower damping keeps reflections and interference alive longer.").font(.caption)
+            ambientSlider("Dot size (pt)", value: $dotSize, range: AmbientSettings.dotSizeRange, step: 0.05)
+            ambientSlider("Dot spacing (pt)", value: $dotSpacing, range: AmbientSettings.dotSpacingRange, step: 0.25)
+            Button("Reset sliders") { AmbientSettings.resetSliders() }
         }
         .padding(20)
         .frame(width: 440)
