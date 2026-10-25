@@ -4,6 +4,7 @@
 # Usage:
 #   fm-desk-floater.sh [--build-only]
 #   fm-desk-floater.sh --release VERSION OUTPUT_DIR
+#   fm-desk-floater.sh --beta [<source-dir>]
 #   fm-desk-floater.sh --help
 #
 # Requires macOS, Swift 5.9+ only for source builds, microphone permission, and
@@ -56,6 +57,20 @@
 # Repackaging the same signed app is reproducible; rebuilding is not promised
 # byte-identical across Swift/compiler/SDK or signing-certificate changes.
 #
+# --beta builds the full floater from <source-dir> (default: this code root),
+# with Swift output in FM_HOME/state/desk-floater-beta/build, and installs
+# /Applications/Starship Floater Beta.app as com.firstmate.desk-floater.beta.
+# Only the beta is quit and updated. Signing follows the same identity policy
+# above, but beta installation refuses ad-hoc or failed signing before quitting
+# or replacing an existing beta;
+# the beta's separate UserDefaults domain keeps its settings and permission
+# bookkeeping separate. The initial activation chord is Left Control + Left
+# Option + Left Shift; subsequent launches preserve the beta's saved chord.
+# Both channels serve the same FM_HOME; switch the other channel off before
+# activating one, since their talk/dictation/screenshot hotkeys are shared.
+# FM_DESK_FLOATER_APPLICATIONS_DIR overrides /Applications for isolated tests
+# or a per-user install; the beta's bundle name is fixed.
+#
 # Environment: FM_HOME selects the home whose config/ is read and that the
 # floater serves (default: this code root). FM_DESK_FLOATER_LSREGISTER overrides
 # the lsregister path. FM_DESK_FLOATER_INSTALLED_APP overrides the installed
@@ -103,6 +118,10 @@ die() {
   exit 1
 }
 
+xml_escape() {
+  printf '%s' "$1" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+}
+
 write_info_plist() {
   local bundle_id="$1"
   cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -137,6 +156,9 @@ write_info_plist() {
 </dict>
 </plist>
 PLIST
+  if [ -n "${BETA_SCRATCH:-}" ]; then
+    plutil -insert LSEnvironment -xml "<dict><key>FM_HOME</key><string>$(xml_escape "$FM_HOME")</string><key>FM_DESK_FLOATER_ROOT</key><string>$(xml_escape "$ROOT")</string></dict>" "$APP_DIR/Contents/Info.plist"
+  fi
 }
 
 # Prints "<hash>\t<name>" for the first valid codesigning identity matching
@@ -249,7 +271,11 @@ build() {
   note "building Starship Floater (release)"
   (
     cd "$PKG"
-    swift build -c release --product DeskFloater
+    if [ -n "${BETA_SCRATCH:-}" ]; then
+      swift build --scratch-path "$BETA_SCRATCH" -c release --product DeskFloater
+    else
+      swift build -c release --product DeskFloater
+    fi
   ) || die "swift build failed"
   [ -x "$RELEASE_BIN" ] || die "expected binary missing: $RELEASE_BIN"
 }
@@ -336,21 +362,74 @@ release() {  # <version> <absolute-output-dir>
 }
 
 main() {
-  local build_only=false installed=false
+  local build_only=false installed=false beta=false source_dir="$ROOT" beta_app=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help|-h) usage; exit 0 ;;
       --build-only) build_only=true; shift ;;
       --release)
-        [ "$#" -eq 3 ] && [ "$build_only" = false ] || die "usage: --release VERSION OUTPUT_DIR (without --build-only)"
+        [ "$#" -eq 3 ] && [ "$build_only" = false ] && [ "$beta" = false ] || die "usage: --release VERSION OUTPUT_DIR (without --build-only)"
         release "$2" "$3"
         exit 0 ;;
+      --beta)
+        beta=true
+        shift
+        if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
+          source_dir="$1"
+          shift
+        fi
+        ;;
       -*) die "unexpected option: $1" ;;
       *) die "unexpected argument: $1" ;;
     esac
   done
 
-  if [ "$build_only" = true ]; then
+  if [ "$beta" = true ]; then
+    [ "$build_only" = false ] || die "--beta and --build-only cannot be combined"
+    source_dir="$(cd "$source_dir" && pwd)"
+    PKG="$source_dir/desk-floater"
+    # Installed beta reopens against this durable home, not a temporary source tree.
+    if [ -x "$FM_HOME/bin/fm-desk-voice.sh" ]; then ROOT="$FM_HOME"; fi
+    BETA_SCRATCH="$FM_HOME/state/desk-floater-beta/build"
+    RELEASE_BIN="$BETA_SCRATCH/release/DeskFloater"
+    beta_app="${FM_DESK_FLOATER_APPLICATIONS_DIR:-/Applications}/Starship Floater Beta.app"
+    APP_DIR="$FM_HOME/state/desk-floater-beta/bundle/Starship Floater Beta.app"
+    APP_NAME="Starship Floater Beta"
+    APP_MACOS="$APP_DIR/Contents/MacOS"
+    APP_BIN="$APP_MACOS/DeskFloater"
+    ICON_SRC="$PKG/Resources/AppIcon.icns"
+    LAUNCH_ID="com.firstmate.desk-floater.beta"
+    choose_identity
+    [ "$SIGN_HASH" != "-" ] || die "beta install requires a valid signing identity; the installed beta was not changed"
+    build
+    assemble_app "$LAUNCH_ID"
+    [ "$SIGN_HASH" != "-" ] || die "beta signing failed; the installed beta was not changed"
+    # Quit by both identifier and path, never by the shared executable name.
+    osascript -l JavaScript - "$LAUNCH_ID" "$beta_app" <<'JXA'
+ObjC.import('AppKit');
+function run(args) {
+    const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(args[0]);
+    for (let i = 0; i < apps.count; i++) {
+        const app = apps.objectAtIndex(i);
+        if (app.bundleURL.path.js !== args[1]) continue;
+        if (!app.terminate) throw Error('Could not quit the beta');
+        // NSRunningApplication refreshes termination through the main run loop.
+        for (let n = 0; n < 100 && !app.isTerminated; n++)
+            $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));
+        if (!app.isTerminated) throw Error('Beta did not quit; no files were replaced');
+    }
+}
+JXA
+    mkdir -p "$(dirname "$beta_app")"
+    rm -rf "$beta_app"
+    ditto "$APP_DIR" "$beta_app"
+    APP_DIR="$beta_app"
+    APP_MACOS="$APP_DIR/Contents/MacOS"
+    APP_BIN="$APP_MACOS/DeskFloater"
+    if ! defaults read "$LAUNCH_ID" activationShortcut >/dev/null 2>&1; then
+      defaults write "$LAUNCH_ID" activationShortcut -string 35
+    fi
+  elif [ "$build_only" = true ]; then
     APP_NAME="Starship Floater (test build)"
     APP_DIR="$BUILD_ONLY_APP_DIR"
     APP_MACOS="$APP_DIR/Contents/MacOS"
@@ -363,7 +442,7 @@ main() {
     exit 0
   fi
 
-  if [ -d "$INSTALLED_APP" ]; then
+  if [ "$beta" = false ] && [ -d "$INSTALLED_APP" ]; then
     installed=true
     APP_DIR="$INSTALLED_APP"
     APP_BIN="$APP_DIR/Contents/MacOS/DeskFloater"
@@ -372,7 +451,7 @@ main() {
     remember_home || die "could not save the installed app's Firstmate home"
     forget_other_copies || die "could not select the installed app for macOS reopening"
     "$LSREGISTER" -f "$APP_DIR" || die "could not register installed app: $APP_DIR"
-  else
+  elif [ "$beta" = false ]; then
     choose_identity
     if needs_build; then
       build
@@ -390,7 +469,7 @@ main() {
     "$APP_BIN" >/dev/null 2>&1 &
     disown 2>/dev/null || true
   fi
-  [ "$installed" = true ] || forget_other_copies
+  if [ "$beta" = false ] && [ "$installed" = false ]; then forget_other_copies; fi
 }
 
 main "$@"

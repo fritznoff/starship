@@ -98,6 +98,16 @@ To prepare a release without launching or registering another copy, use `bin/fm-
 Update the tap's cask version and sha256 from that command's output, publish the zip on the fork's matching `starship-floater-vVERSION` release, and publish the cask only after its asset is available.
 Keep release assets immutable: a changed build gets a new version rather than replacing a zip that an installed cask already checks by hash.
 
+## Beta install
+
+Run `bin/fm-desk-floater.sh --beta [<source-dir>]` to install the full app as **Starship Floater Beta** beside the regular app; omit the source directory to build this copy.
+It serves the same Firstmate home, with its own app settings and permission grants, and starts with **Left Control + Left Option + Left Shift** as its changeable activation shortcut.
+Switch the regular floater off with its activation shortcut before activating beta: their talk, dictation and screenshot hotkeys are shared.
+Grant the beta its own Microphone, Accessibility, Screen Recording and Terminal Automation permissions once, as needed; updates use the same signing identity to preserve grants.
+A valid signing identity is required; an unsigned or failed build does not replace an existing beta.
+Rerunning the command quits and updates only beta, never the regular app; reopen beta to change its shortcut.
+The launcher's `--help` owns exact install and build locations.
+
 ## Activating the floater
 
 The floater starts hidden, and while it is hidden none of the hotkeys below do anything.

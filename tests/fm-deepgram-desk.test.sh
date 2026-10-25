@@ -691,9 +691,14 @@ new_floater_root() {  # <name> <identities-listing>
   cat > "$fx/fake/swift" <<EOF
 #!/usr/bin/env bash
 printf 'build\n' >> "$fx/swift.log"
-mkdir -p .build/release
-printf '#!/bin/sh\n' > .build/release/DeskFloater
-chmod +x .build/release/DeskFloater
+scratch=.build
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = --scratch-path ]; then scratch=\$2; shift; fi
+  shift
+done
+mkdir -p "\$scratch/release"
+printf '#!/bin/sh\n' > "\$scratch/release/DeskFloater"
+chmod +x "\$scratch/release/DeskFloater"
 EOF
   cat > "$fx/fake/security" <<EOF
 #!/usr/bin/env bash
@@ -756,6 +761,10 @@ bundle id:                  DeskFloater (0x30)
 path:                       $fx/checked/desk-floater/.build/Starship Floater (test build).app (0x31)
 identifier:                 com.firstmate.desk-floater.build-only
 --------------------------------------------------------------------------------
+bundle id:                  Beta (0x35)
+path:                       $fx/Applications/Starship Floater Beta.app (0x36)
+identifier:                 com.firstmate.desk-floater.beta
+--------------------------------------------------------------------------------
 bundle id:                  Other (0x40)
 path:                       /Applications/Other.app (0x41)
 identifier:                 com.example.other
@@ -764,6 +773,19 @@ DUMP
 fi
 printf '%s\n' "\$*" >> "$fx/lsregister.log"
 EOF
+  cat > "$fx/fake/osascript" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$fx/quit.log"
+[ ! -f "$fx/quit.fail" ]
+EOF
+  cat > "$fx/fake/defaults" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  read) [ -f "$fx/beta-shortcut" ] || exit 1; cat "$fx/beta-shortcut" ;;
+  write) printf '%s\n' "\$5" > "$fx/beta-shortcut"; printf '%s\n' "\$*" >> "$fx/defaults.log" ;;
+esac
+EOF
+  touch "$fx/quit.log" "$fx/defaults.log"
   chmod +x "$fx/fake/"*
   touch "$fx/swift.log" "$fx/codesign.log" "$fx/open.log" "$fx/lsregister.log" "$fx/tools.log"
   printf '%s\n' "$fx"
@@ -772,7 +794,7 @@ EOF
 run_floater() {  # <fixture> [args...]
   local fx=$1
   shift
-  HOME="$fx/user" PATH="$fx/fake:$PATH" FM_HOME="$fx/root" FM_DESK_FLOATER_INSTALLED_APP="$fx/installed/Starship Floater.app" FM_DESK_FLOATER_LSREGISTER="$fx/fake/lsregister" \
+  HOME="$fx/user" PATH="$fx/fake:$PATH" FM_HOME="$fx/root" FM_DESK_FLOATER_INSTALLED_APP="$fx/installed/Starship Floater.app" FM_DESK_FLOATER_APPLICATIONS_DIR="$fx/Applications" FM_DESK_FLOATER_LSREGISTER="$fx/fake/lsregister" \
     "$fx/root/bin/fm-desk-floater.sh" "$@" 2>&1
 }
 
@@ -935,6 +957,61 @@ test_floater_release() {
   [ "$status" -ne 0 ] || fail "release accepted signing failure"
   [ ! -f "$fx/output/Starship-Floater-1.2.4-$(uname -m).zip" ] || fail "failed signing left a release"
   pass "fm-desk-floater: release embeds version and stable identity without launching, and refuses unsigned or overwritten assets"
+}
+
+test_floater_beta_is_isolated() {
+  local fx source app regular out
+  if [ "$(uname)" != Darwin ]; then
+    pass "fm-desk-floater: beta tests skipped (need macOS)"
+    return
+  fi
+  fx=$(new_floater_root floater-beta "$(floater_listing)")
+  source=$(new_floater_root floater-beta-source "$(floater_listing)")
+  app="$fx/Applications/Starship Floater Beta.app"
+  regular="$fx/root/desk-floater/.build/Starship Floater.app"
+  out=$(run_floater "$fx") || fail "regular launch failed: $out"
+  mkdir -p "$fx/installed"
+  cp -R "$regular" "$fx/installed/Starship Floater.app"
+  regular="$fx/installed/Starship Floater.app"
+  cp "$regular/Contents/MacOS/DeskFloater" "$fx/regular.bin"
+  cp "$regular/Contents/Info.plist" "$fx/regular.plist"
+  : > "$fx/lsregister.log"
+  : > "$fx/codesign.log"
+  out=$(run_floater "$fx" --beta "$source/root") || fail "beta failed: $out"
+  assert_equals "com.firstmate.desk-floater.beta" "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" "beta has its own settings domain"
+  assert_equals "Starship Floater Beta" "$(plutil -extract CFBundleName raw -o - "$app/Contents/Info.plist")" "beta has a visible channel name"
+  assert_equals "$fx/root" "$(plutil -extract LSEnvironment.FM_HOME raw -o - "$app/Contents/Info.plist")" "Finder reopens beta against the same home"
+  assert_equals 35 "$(cat "$fx/beta-shortcut")" "beta defaults to Left Control + Left Option + Left Shift"
+  assert_grep "--sign $DEV_HASH --identifier com.firstmate.desk-floater.beta" "$fx/codesign.log" "beta uses stable signing"
+  assert_no_grep "$regular" "$fx/codesign.log" "beta never re-signs regular app"
+  assert_grep "com.firstmate.desk-floater.beta $app" "$fx/quit.log" "only beta identifier and path are quit"
+  [ ! -s "$fx/lsregister.log" ] || fail "beta changed LaunchServices registrations"
+  [ ! -d "$source/root/desk-floater/.build" ] || fail "beta touched source build output"
+  printf '3\n' > "$fx/beta-shortcut"
+  out=$(run_floater "$fx" --beta) || fail "repeat beta failed: $out"
+  assert_equals 3 "$(cat "$fx/beta-shortcut")" "beta updates preserve the selected shortcut"
+  cp "$app/Contents/MacOS/DeskFloater" "$fx/beta.bin"
+  : > "$fx/quit.log"
+  printf '%s\n' "$DEV_HASH" > "$fx/codesign.fail"
+  if run_floater "$fx" --beta >/dev/null; then fail "failed signing installed beta"; fi
+  [ ! -s "$fx/quit.log" ] || fail "failed signing quit installed beta"
+  cmp -s "$app/Contents/MacOS/DeskFloater" "$fx/beta.bin" || fail "failed signing replaced beta"
+  rm "$fx/codesign.fail"
+  : > "$fx/quit.fail"
+  if run_floater "$fx" --beta >/dev/null; then fail "refused quit replaced beta"; fi
+  cmp -s "$app/Contents/MacOS/DeskFloater" "$fx/beta.bin" || fail "refused quit changed beta"
+  rm "$fx/quit.fail"
+  cmp -s "$regular/Contents/MacOS/DeskFloater" "$fx/regular.bin" || fail "beta changed regular binary"
+  cmp -s "$regular/Contents/Info.plist" "$fx/regular.plist" || fail "beta changed regular plist"
+  : > "$fx/quit.log"
+  out=$(run_floater "$fx") || fail "regular relaunch failed: $out"
+  [ ! -s "$fx/quit.log" ] || fail "regular launcher quit beta"
+  assert_no_grep "$app" "$fx/lsregister.log" "regular launcher never unregisters beta"
+  if run_floater "$fx" --beta --build-only >/dev/null; then fail "conflicting modes accepted"; fi
+  fx=$(new_floater_root floater-beta-no-identity "0 valid identities found")
+  if run_floater "$fx" --beta >/dev/null; then fail "unsigned beta install accepted"; fi
+  [ ! -s "$fx/quit.log" ] || fail "missing signing identity quit installed beta"
+  pass "fm-desk-floater: beta installs separately, preserves settings, signs stably and never changes regular app"
 }
 
 test_floater_signing_identity_config_and_fallbacks() {
@@ -3105,6 +3182,7 @@ test_floater_release
 test_floater_help_and_option_refusal
 test_floater_signs_with_a_stable_identity
 test_floater_build_only_leaves_the_launched_app_alone
+test_floater_beta_is_isolated
 test_floater_signing_identity_config_and_fallbacks
 test_speak_uses_say_when_key_absent
 test_speak_prefers_deepgram_when_key_present
