@@ -3,6 +3,18 @@ import XCTest
 @testable import DeskFloater
 
 final class ActivationTests: XCTestCase {
+    @MainActor
+    func testEscapeIsObservedEvenWhenCaptureHotkeysAreOff() throws {
+        let monitor = HotkeyMonitor()
+        var escapes = 0
+        monitor.onEscape = { escapes += 1 }
+        let cg = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true))
+        let event = try XCTUnwrap(NSEvent(cgEvent: cg))
+        monitor.handle(event)
+        XCTAssertEqual(escapes, 1)
+        XCTAssertEqual(event.keyCode, 53)
+    }
+
     /// Opt in with a bundle made by fm-desk-floater.sh --build-only.
     /// Launches the real app in a temporary home; macOS may ask for Accessibility.
     @MainActor

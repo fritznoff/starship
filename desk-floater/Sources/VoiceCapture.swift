@@ -59,6 +59,7 @@ final class VoiceCapture {
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var converter: CaptureConverter?
+    private var finishing: DispatchWorkItem?
 
     init(makeEngine: @escaping () throws -> CaptureEngine = { try VoiceEngine() }) {
         self.makeEngine = makeEngine
@@ -121,15 +122,21 @@ final class VoiceCapture {
     /// Keeps recording for `tail`, then stops and closes the file and calls
     /// `done` on the main queue.
     func finish(after tail: TimeInterval = releaseTail, done: @escaping @MainActor () -> Void) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + tail) { [self] in
+        finishing?.cancel()
+        let work = DispatchWorkItem { [self] in
+            finishing = nil
             stop()
             MainActor.assumeIsolated { done() }
         }
+        finishing = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + tail, execute: work)
     }
 
     /// Stops capturing and closes the file at once; safe to call more than
     /// once. The engine is kept for the next capture.
     func stop() {
+        finishing?.cancel()
+        finishing = nil
         engine?.removeTap()
         engine?.stop()
         lock.withLock {

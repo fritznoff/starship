@@ -17,7 +17,7 @@ Exactly one fleet brain remains: the primary already running in this home.
 - Out of sight until you ask for it: it starts hidden and ignores every hotkey until you press the [activation chord](#activating-the-floater).
 - Speech-to-text via Deepgram (`bin/fm-deepgram-stt.sh`).
 - Transcripts typed straight into the primary Firstmate chat and submitted, with a durable mailbox under the home (`state/desk-voice/inbox/`) as the fallback.
-- No length limit on a message, and no recording lost: one that cannot be transcribed or delivered is saved and tried again (see [Recordings are never lost](#recordings-are-never-lost)).
+- No length limit on a message, and no recording lost unintentionally: one that cannot be transcribed or delivered is saved and tried again (see [Recordings are never lost](#recordings-are-never-lost)).
 - Optional speak-back of Firstmate outcome lines through `bin/fm-speak.sh`,
   which speaks through macOS `say` when `config/speak` names a `voice` and
   through Deepgram Aura otherwise, each the fallback for the other.
@@ -128,6 +128,15 @@ If Metal is unavailable, the controls still work over a plain plate.
 It also switches itself off after two minutes without use. Use means the chord, any hotkey, a click on the floater, and any recording, dictation, screenshot or message still being sent or waiting to be sent or retried; it never switches off under those, and the two minutes start again when they finish. Sending a message does not hide it.
 Without the Accessibility permission the chord cannot be read, so the floater stays in sight (with its "!" badge, see [Permissions](#permissions)) until the permission is granted, and then hides.
 The microphone is made ready when the floater appears, not at launch, so the first words after the chord are kept.
+
+## Cancelling a capture
+
+Press Escape while recording, transcribing, or waiting to send to discard the pending voice message, dictation and stacked screenshots together.
+A ready transcript waits two seconds with “Sending in 2s - Esc to cancel” before it can be sent, typed, pasted or put in the delivery mailbox.
+Screenshots keep their existing three-second stack window after the last image finishes, with an Escape reminder; that whole window is cancellable too.
+The floater briefly shows “Cancelled”, deletes the pending audio and screenshots rather than saving them for retry, and ignores any transcription or screenshot result still arriving.
+Escape is only observed through the existing Accessibility key monitoring: it still reaches the focused app unchanged, and does nothing to the floater when nothing is pending.
+Once delivery has begun, Escape cannot recall it or remove a message already in the mailbox.
 
 ## Controls
 

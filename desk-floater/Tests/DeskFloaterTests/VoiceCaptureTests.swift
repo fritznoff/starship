@@ -124,6 +124,24 @@ final class VoiceCaptureTests: XCTestCase {
         wait(for: [drained], timeout: 2)
     }
 
+    @MainActor
+    func testCancellingTheReleaseTailCannotStopTheNextRecording() async throws {
+        let capture = makeCapture()
+        try capture.start(writingTo: newFile())
+        built[0].speak(0.1)
+        var delivered = false
+        capture.finish(after: 0.1) { delivered = true }
+        capture.stop()
+        let next = newFile()
+        try capture.start(writingTo: next)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(delivered)
+        XCTAssertTrue(built[0].running)
+        built[0].speak(0.5)
+        capture.stop()
+        XCTAssertEqual(try seconds(in: next), 0.5, accuracy: 0.05)
+    }
+
     func testADeviceChangeBetweenCapturesRebuildsTheEngineBeforeTheNextPress() throws {
         let capture = makeCapture()
         try capture.warm()

@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import XCTest
 @testable import DeskFloater
 
@@ -243,6 +244,132 @@ final class RecordingTests: XCTestCase {
         let calls = try String(contentsOf: home.log, encoding: .utf8)
         XCTAssertTrue(calls.contains("fm-deepgram-stt.sh \(spoken.path)\n"), calls)
         XCTAssertTrue(calls.contains("fm-desk-voice.sh send --source desk-floater -- hello there\n"), calls)
+    }
+
+    @MainActor
+    func testEscapeWithNothingPendingDoesNothing() {
+        let model = FloaterModel(repoRoot: "/unused", fmHome: "/unused")
+        model.status = "Typed"
+        model.cancelPending()
+        XCTAssertEqual(model.status, "Typed")
+        XCTAssertEqual(model.mode, .idle)
+    }
+
+    @MainActor
+    func testEscapeDuringRecordingAndStartingCancelsBothPurposes() {
+        for purpose in [FloaterModel.Purpose.firstmate, .dictate] {
+            for mode in [FloaterModel.Mode.starting, .recording] {
+                let model = FloaterModel(repoRoot: "/unused", fmHome: "/unused")
+                model.mode = mode
+                model.purpose = purpose
+                model.cancelPending()
+                XCTAssertEqual(model.mode, .idle)
+                XCTAssertEqual(model.status, "Cancelled")
+            }
+        }
+    }
+
+    @MainActor
+    func testEscapeDuringTranscriptionDiscardsEvenAFailedResultWithoutRetry() async throws {
+        let home = try standInHome()
+        let stt = home.root.appendingPathComponent("bin/fm-deepgram-stt.sh")
+        try "#!/bin/sh\nsleep 0.2\nexit 1\n".write(to: stt, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stt.path)
+        for purpose in [FloaterModel.Purpose.firstmate, .dictate] {
+            let model = FloaterModel(repoRoot: home.root.path, fmHome: home.root.path)
+            let audio = try words(seconds: 5, peak: 3000)
+            model.transcribeAndDeliver(audio, purpose: purpose)
+            model.cancelPending()
+            try await Task.sleep(nanoseconds: 400_000_000)
+            XCTAssertEqual(model.status, "Cancelled")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
+            XCTAssertTrue(model.retrying.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: home.log.path))
+        }
+    }
+
+    @MainActor
+    func testEscapeDuringGraceSendsAndPastesNothingForEitherPurpose() async throws {
+        let home = try standInHome()
+        let clipboard = NSPasteboard.general.changeCount
+        for purpose in [FloaterModel.Purpose.firstmate, .dictate] {
+            let model = FloaterModel(repoRoot: home.root.path, fmHome: home.root.path)
+            let audio = try words(seconds: 5, peak: 3000)
+            model.transcribeAndDeliver(audio, purpose: purpose)
+            try await waitUntil { model.status == "Sending in 2s - Esc to cancel" }
+            let callsBeforeGraceEnds = try String(contentsOf: home.log, encoding: .utf8)
+            XCTAssertFalse(callsBeforeGraceEnds.contains("fm-desk-voice.sh"))
+            model.cancelPending()
+            try await Task.sleep(nanoseconds: 2_100_000_000)
+            XCTAssertEqual(model.mode, .idle)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
+            XCTAssertTrue(model.retrying.isEmpty)
+        }
+        XCTAssertEqual(NSPasteboard.general.changeCount, clipboard)
+        let calls = try String(contentsOf: home.log, encoding: .utf8)
+        XCTAssertFalse(calls.contains("fm-desk-voice.sh"), calls)
+    }
+
+    @MainActor
+    func testEscapeDropsScreenshotStackAndLateScreenshotCompletion() async throws {
+        let home = try standInHome()
+        let image = home.root.appendingPathComponent("shot.png")
+        let script = home.root.appendingPathComponent("bin/fm-desk-voice.sh")
+        try """
+        #!/bin/sh
+        if [ "$1" = shot ]; then
+            sleep 0.2
+            touch '\(image.path)'
+            printf '%s\\n' '\(image.path)'
+        else
+            echo sent >> '\(home.log.path)'
+        fi
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let model = FloaterModel(repoRoot: home.root.path, fmHome: home.root.path)
+        model.screenTrusted = true
+        model.takeShot()
+        try await waitUntil { FileManager.default.fileExists(atPath: image.path) && model.status.contains("stacked") }
+        model.cancelPending()
+        XCTAssertEqual(model.shotCount, 0)
+        // The capture may have written its file before its completion arrives.
+        try await waitUntil { !FileManager.default.fileExists(atPath: image.path) }
+        model.takeShot()
+        model.cancelPending()
+        try await Task.sleep(nanoseconds: 3_500_000_000)
+        XCTAssertEqual(model.shotCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: image.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.log.path))
+    }
+
+    @MainActor
+    func testEscapeDropsTranscriptAudioAndStackedShotsTogether() async throws {
+        let home = try standInHome()
+        let image = home.root.appendingPathComponent("shot.png")
+        let script = home.root.appendingPathComponent("bin/fm-desk-voice.sh")
+        try """
+        #!/bin/sh
+        if [ "$1" = shot ]; then
+            touch '\(image.path)'
+            printf '%s\\n' '\(image.path)'
+        else
+            echo sent >> '\(home.log.path)'
+        fi
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let model = FloaterModel(repoRoot: home.root.path, fmHome: home.root.path)
+        model.screenTrusted = true
+        model.takeShot()
+        let audio = try words(seconds: 5, peak: 3000)
+        model.transcribeAndDeliver(audio, purpose: .firstmate)
+        try await waitUntil { model.status == "Adding shots - Esc to cancel" }
+        model.cancelPending()
+        XCTAssertEqual(model.status, "Cancelled")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: image.path))
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        let calls = try String(contentsOf: home.log, encoding: .utf8)
+        XCTAssertFalse(calls.contains("sent"))
     }
 
     @MainActor

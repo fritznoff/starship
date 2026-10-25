@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.onTalkDown = { [weak model] in model?.hotkeyTalkBegan() }
         hotkeys.onTalkUp = { [weak model] in model?.hotkeyTalkEnded() }
         hotkeys.onTalkChord = { [weak model] in model?.hotkeyTalkChorded() }
+        hotkeys.onEscape = { [weak model] in model?.cancelPending() }
         hotkeys.onDictateTap = { [weak model] in model?.toggleDictation() }
         hotkeys.onShotTap = { [weak model] in model?.takeShot() }
         hotkeys.onChord = { [weak model] in model?.toggleActive() }
@@ -450,6 +451,7 @@ final class HotkeyMonitor {
     var onTalkDown: (() -> Void)?
     var onTalkUp: (() -> Void)?
     var onTalkChord: (() -> Void)?
+    var onEscape: (() -> Void)?
     var onDictateTap: (() -> Void)?
     var onShotTap: (() -> Void)?
     var onChord: (() -> Void)?
@@ -526,6 +528,13 @@ final class HotkeyMonitor {
     }
 
     func handle(_ event: NSEvent) {
+        if event.type == .keyDown && event.keyCode == 53 {
+            talkKey = TalkKey()
+            dictateKey = TapKey.rightCommand
+            shotKey = TapKey.rightShift
+            onEscape?()
+            return
+        }
         guard settingsVisible?() != true else { return }
         if event.type == .flagsChanged && chord.update(flags: event.modifierFlags.rawValue) {
             // Whatever the first keys of the chord began is dropped with it.
@@ -1127,6 +1136,33 @@ final class FloaterModel: ObservableObject {
     private var shotTimer: Timer?
     // The recordings of the words held in the stack, kept until they are sent.
     private var heldAudio: [URL] = []
+    static let sendGrace: TimeInterval = 2
+    private var cancelGeneration = 0
+    private var pendingAudio: Set<URL> = []
+
+    /// Escape is observation only; delivery already begun cannot be recalled.
+    func cancelPending() {
+        guard mode == .starting || mode == .recording || !pendingAudio.isEmpty || !stack.isEmpty else { return }
+        cancelGeneration += 1
+        shotTimer?.invalidate()
+        shotTimer = nil
+        let images = stack.shots
+        stack = ShotStack()
+        for path in images { try? FileManager.default.removeItem(atPath: path) }
+        for url in pendingAudio.union(heldAudio) { try? FileManager.default.removeItem(at: url) }
+        pendingAudio.removeAll()
+        heldAudio = []
+        cancelCapture()
+        shotsChanged()
+        flash("Cancelled")
+    }
+
+    private func waitToSend(generation: Int) async -> Bool {
+        guard generation == cancelGeneration else { return false }
+        status = "Sending in 2s - Esc to cancel"
+        try? await Task.sleep(nanoseconds: UInt64(Self.sendGrace * 1_000_000_000))
+        return generation == cancelGeneration
+    }
 
     // Saved talk-to-Firstmate recordings waiting for an automatic retry, by
     // path, with the attempts each has had. See Recording.
@@ -1214,10 +1250,10 @@ final class FloaterModel: ObservableObject {
 
     var idleStatus: String {
         if stack.transcript != nil {
-            return "Adding shots…"
+            return "Adding shots - Esc to cancel"
         }
         if shotCount > 0 {
-            return shotCount == 1 ? "1 shot stacked" : "\(shotCount) shots stacked"
+            return shotCount == 1 ? "1 shot stacked - Esc to cancel" : "\(shotCount) shots stacked - Esc to cancel"
         }
         if !retrying.isEmpty {
             return Self.savedRetrying
@@ -1252,12 +1288,17 @@ final class FloaterModel: ObservableObject {
             flash("Screen off - click !")
             return
         }
+        let generation = cancelGeneration
         let display = ScreenAccess.displayUnderPointer()
         stack.shotStarted(at: Date())
         shotsChanged()
         Task.detached(priority: .userInitiated) { [repoRoot, fmHome] in
             let path = Self.shoot(repoRoot: repoRoot, fmHome: fmHome, display: display)
             await MainActor.run {
+                guard generation == self.cancelGeneration else {
+                    if let path { try? FileManager.default.removeItem(atPath: path) }
+                    return
+                }
                 self.stack.shotFinished(path, at: Date())
                 self.shotsChanged()
                 if path == nil {
@@ -1616,9 +1657,10 @@ final class FloaterModel: ObservableObject {
     }
 
     private func startRecording() {
+        let generation = cancelGeneration
         Task {
             let ok = await requestMic()
-            guard mode == .starting else { return }
+            guard generation == cancelGeneration, mode == .starting else { return }
             guard ok else {
                 mode = .idle
                 status = "Mic denied"
@@ -1679,22 +1721,31 @@ final class FloaterModel: ObservableObject {
             return
         }
         recordURL = nil
+        pendingAudio.insert(url)
+        let generation = cancelGeneration
         mode = .busy
-        status = "Transcribing…"
+        status = "Transcribing - Esc to cancel"
         // The last words are still arriving as the key comes up; the capture
         // keeps recording for a moment before the file is closed.
         capture.finish { [self] in
+            guard generation == cancelGeneration else { return }
             transcribeAndDeliver(url, purpose: purpose)
         }
     }
 
     func transcribeAndDeliver(_ url: URL, purpose: Purpose) {
+        pendingAudio.insert(url)
+        let generation = cancelGeneration
+        mode = .busy
+        status = "Transcribing - Esc to cancel"
         Task.detached(priority: .userInitiated) { [repoRoot, fmHome] in
             // Near silence holds no words to send or to retry: say so at once
             // rather than saving it and retrying it.
             if Recording.isSilent(url) {
                 try? FileManager.default.removeItem(at: url)
                 await MainActor.run {
+                    guard generation == self.cancelGeneration else { return }
+                    self.pendingAudio.remove(url)
                     self.finish(status: Self.micSilent, for: 6)
                 }
                 return
@@ -1707,6 +1758,8 @@ final class FloaterModel: ObservableObject {
                 let failed = transcript == nil
                 if Recording.keep(failed: failed, duration: Recording.duration(of: url)) {
                     await MainActor.run {
+                        guard generation == self.cancelGeneration else { return }
+                        self.pendingAudio.remove(url)
                         self.keepForRetry(url, purpose: purpose,
                                           reason: failed ? "transcription failed" : "no speech heard",
                                           finishing: true)
@@ -1714,49 +1767,53 @@ final class FloaterModel: ObservableObject {
                 } else {
                     try? FileManager.default.removeItem(at: url)
                     await MainActor.run {
+                        guard generation == self.cancelGeneration else { return }
+                        self.pendingAudio.remove(url)
                         self.finish(status: failed ? "Transcribe failed" : "No speech")
                     }
                 }
                 return
             }
-            if purpose == .dictate {
-                // Once transcribed, dictation is always typed, sent or left on
-                // the clipboard below.
-                try? FileManager.default.removeItem(at: url)
-            }
-            switch purpose {
-            case .dictate:
-                // Dictating into Firstmate's own chat sends it, as talking to
-                // Firstmate does; anywhere else the text is only pasted.
-                let front = await MainActor.run { NSWorkspace.shared.frontmostApplication }
-                var denied = false
-                if let front {
-                    switch FrontTab.tty(of: front) {
-                    case .tty(let tty):
-                        if let sent = Self.sendIfInFront(repoRoot: repoRoot, fmHome: fmHome, text: text,
-                                                         app: front.processIdentifier, tty: tty) {
-                            await MainActor.run {
-                                self.finish(status: sent)
-                            }
-                            return
-                        }
-                    case .denied:
-                        denied = true
-                    case .none:
-                        break
-                    }
-                }
-                await MainActor.run { [denied] in
-                    let typed = Paster.paste(text)
-                    if !typed {
-                        self.finish(status: "Copied - press ⌘V")
-                    } else {
-                        self.finish(status: denied ? "Typed, not sent - allow Terminal" : "Typed")
-                    }
-                }
-            case .firstmate:
-                await MainActor.run {
+            guard await self.waitToSend(generation: generation) else { return }
+            let committed = await MainActor.run {
+                guard generation == self.cancelGeneration else { return false }
+                self.pendingAudio.remove(url)
+                if purpose == .firstmate {
                     self.voiceTranscribed(text, audio: url)
+                } else {
+                    self.status = "Delivering…"
+                }
+                return true
+            }
+            guard committed, purpose == .dictate else { return }
+            // Dictation is committed now; the audio is no longer needed.
+            try? FileManager.default.removeItem(at: url)
+            // Dictating into Firstmate's own chat sends it, as talking to
+            // Firstmate does; anywhere else the text is only pasted.
+            let front = await MainActor.run { NSWorkspace.shared.frontmostApplication }
+            var denied = false
+            if let front {
+                switch FrontTab.tty(of: front) {
+                case .tty(let tty):
+                    if let sent = Self.sendIfInFront(repoRoot: repoRoot, fmHome: fmHome, text: text,
+                                                     app: front.processIdentifier, tty: tty) {
+                        await MainActor.run {
+                            self.finish(status: sent)
+                        }
+                        return
+                    }
+                case .denied:
+                    denied = true
+                case .none:
+                    break
+                }
+            }
+            await MainActor.run { [denied] in
+                let typed = Paster.paste(text)
+                if !typed {
+                    self.finish(status: "Copied - press ⌘V")
+                } else {
+                    self.finish(status: denied ? "Typed, not sent - allow Terminal" : "Typed")
                 }
             }
         }
