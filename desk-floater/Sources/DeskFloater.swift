@@ -2117,7 +2117,7 @@ struct GenerationMark: View {
             Text(FloaterGeneration.roman(FloaterGeneration.current))
                 .opacity(beta || hovered ? 1 : 0)
         }
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: 11, weight: .semibold, design: .serif))
         .foregroundStyle(.white.opacity(0.75))
         .frame(height: 14)
         .animation(.easeInOut(duration: 0.15), value: hovered)
@@ -2517,7 +2517,7 @@ struct FloaterView: View {
                 .opacity(hovering && shortcut != nil ? 0.15 : 1)
             if let shortcut {
                 Text(shortcut)
-                    .font(.system(size: size + 1, weight: .bold))
+                    .font(.system(size: size, weight: .regular))
                     .fixedSize()
                     .opacity(hovering ? 1 : 0)
                     .accessibilityHidden(true)
