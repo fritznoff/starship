@@ -2089,7 +2089,7 @@ final class FloaterModel: ObservableObject {
 }
 
 enum FloaterGeneration {
-    static let current = 1
+    static let current = 2
 
     static func roman(_ number: Int) -> String {
         guard number > 0 else { return "" }
@@ -2129,25 +2129,78 @@ struct GenerationMark: View {
 
 struct WritingIndicator: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var started = Date()
 
-    static func progress(at time: TimeInterval, reduceMotion: Bool) -> Double {
-        reduceMotion ? 0.65 : time.truncatingRemainder(dividingBy: 1.2) / 1.2
+    struct Frame: Equatable {
+        var lines: [Double]
+        var tip: CGPoint
+        var opacity: Double
+    }
+
+    static let duration = 4.8
+
+    static func frame(at elapsed: TimeInterval, reduceMotion: Bool) -> Frame {
+        if reduceMotion { return Frame(lines: [0, 0, 0], tip: CGPoint(x: 10, y: 16), opacity: 1) }
+        let time = max(0, elapsed).truncatingRemainder(dividingBy: duration)
+        func ease(_ value: Double) -> Double {
+            let x = min(1, max(0, value))
+            return x * x * (3 - 2 * x)
+        }
+        let lines = (0..<3).map { min(1, max(0, (time - 0.65 - Double($0) * 1.07) / 0.85)) }
+        var tip = CGPoint(x: 3, y: 9 - 5 * (1 - ease(time / 0.65)))
+        for row in 0..<3 where time >= 0.65 + Double(row) * 1.07 {
+            let progress = lines[row]
+            tip = scribblePoint(progress, row: row)
+            if row < 2 && progress == 1 {
+                let move = ease((time - 0.65 - Double(row) * 1.07 - 0.85) / 0.22)
+                let next = scribblePoint(0, row: row + 1)
+                tip.x += (next.x - tip.x) * move
+                tip.y += (next.y - tip.y) * move - sin(move * .pi) * 1.2
+            }
+        }
+        tip.y -= 0.3 * sin(time * 5)
+        return Frame(lines: lines, tip: tip,
+                     opacity: ease(time / 0.4) * (1 - ease((time - 3.95) / 0.6)))
+    }
+
+    static func scribblePoint(_ progress: Double, row: Int) -> CGPoint {
+        CGPoint(x: 3 + progress * (row == 2 ? 10 : 14),
+                y: 9 + Double(row) * 4 + sin(progress * 9 * .pi) * 0.65
+                    + sin(progress * 17 * .pi) * 0.25)
+    }
+
+    static func drawing(_ frame: Frame) -> some View {
+        Canvas { context, _ in
+            for row in 0..<3 where frame.lines[row] > 0 {
+                var line = Path()
+                line.move(to: scribblePoint(0, row: row))
+                let steps = max(1, Int(ceil(frame.lines[row] * 60)))
+                for step in 1...steps {
+                    line.addLine(to: scribblePoint(frame.lines[row] * Double(step) / Double(steps), row: row))
+                }
+                context.stroke(line, with: .color(.white.opacity(0.55)),
+                               style: StrokeStyle(lineWidth: 0.85, lineCap: .round, lineJoin: .round))
+            }
+            // A tiny hand-drawn nib: its point stays just above the fresh ink.
+            var pen = Path()
+            pen.move(to: frame.tip)
+            pen.addLine(to: CGPoint(x: frame.tip.x + 2, y: frame.tip.y - 4))
+            pen.addLine(to: CGPoint(x: frame.tip.x + 7, y: frame.tip.y - 11))
+            pen.addQuadCurve(to: CGPoint(x: frame.tip.x + 9, y: frame.tip.y - 9),
+                             control: CGPoint(x: frame.tip.x + 10, y: frame.tip.y - 12))
+            pen.addLine(to: CGPoint(x: frame.tip.x + 4, y: frame.tip.y - 2))
+            pen.closeSubpath()
+            context.stroke(pen, with: .color(.white.opacity(0.95)),
+                           style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: 26, height: 26)
+        .clipped()
+        .opacity(frame.opacity)
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
-            let progress = Self.progress(at: context.date.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion)
-            ZStack {
-                Capsule()
-                    .frame(width: 2 + 14 * progress, height: 1.5)
-                    .offset(x: -7 + 7 * progress, y: 7)
-                Image(systemName: "pencil.tip")
-                    .font(.system(size: 13, weight: .semibold))
-                    .rotationEffect(.degrees(-30))
-                    .offset(x: -7 + 14 * progress, y: -1)
-            }
-            .foregroundStyle(.white)
-            .frame(width: 22, height: 22)
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion)) { context in
+            Self.drawing(Self.frame(at: context.date.timeIntervalSince(started), reduceMotion: reduceMotion))
         }
         .accessibilityLabel("Transcribing")
     }
@@ -2425,6 +2478,8 @@ struct FloaterView: View {
                 speechBars
             } else if model.mode == .busy {
                 WritingIndicator()
+                    .transition(.opacity.animation(.easeOut(duration: 0.2)))
+                    .zIndex(1)
             } else {
                 shortcutIcon(icon, shortcut: mainHint, size: 15, weight: .semibold)
             }

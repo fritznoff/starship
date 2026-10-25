@@ -328,12 +328,38 @@ final class IconOnlyFloaterTests: XCTestCase {
         }
     }
 
-    @MainActor func testWritingMovesAcrossTheLineAndReduceMotionFreezesIt() {
-        XCTAssertEqual(WritingIndicator.progress(at: 0, reduceMotion: false), 0)
-        XCTAssertEqual(WritingIndicator.progress(at: 0.6, reduceMotion: false), 0.5, accuracy: 0.00001)
-        XCTAssertEqual(WritingIndicator.progress(at: 1.2, reduceMotion: false), 0)
-        for time in [0.0, 0.3, 0.9, 2.0, 100.0] {
-            XCTAssertEqual(WritingIndicator.progress(at: time, reduceMotion: true), 0.65)
+    @MainActor func testWritingFloatsInDrawsThreeLinesThenFadesAndRepeats() {
+        let start = WritingIndicator.frame(at: 0, reduceMotion: false)
+        XCTAssertEqual(start.opacity, 0)
+        XCTAssertEqual(start.lines, [0, 0, 0])
+        let landed = WritingIndicator.frame(at: 0.65, reduceMotion: false)
+        XCTAssertGreaterThan(landed.tip.y, start.tip.y)
+        XCTAssertEqual(landed.opacity, 1)
+        for row in 0..<3 {
+            let frame = WritingIndicator.frame(at: 0.65 + Double(row) * 1.07 + 0.425, reduceMotion: false)
+            for line in 0..<3 {
+                XCTAssertEqual(frame.lines[line], line < row ? 1 : line == row ? 0.5 : 0, accuracy: 0.00001)
+            }
+            XCTAssertEqual(frame.tip.x, row == 2 ? 8 : 10, accuracy: 0.00001)
+        }
+        for row in 0..<2 {
+            let moving = WritingIndicator.frame(at: 0.65 + Double(row) * 1.07 + 0.96, reduceMotion: false)
+            XCTAssertEqual(moving.tip.x, 10, accuracy: 0.00001, "pen glides back between lines")
+            XCTAssertEqual(moving.lines[row], 1)
+            XCTAssertEqual(moving.lines[row + 1], 0)
+        }
+        XCTAssertEqual(WritingIndicator.frame(at: 3.8, reduceMotion: false).lines, [1, 1, 1])
+        XCTAssertEqual(WritingIndicator.frame(at: 4.25, reduceMotion: false).opacity, 0.5, accuracy: 0.00001)
+        XCTAssertEqual(WritingIndicator.frame(at: 4.6, reduceMotion: false).opacity, 0)
+        XCTAssertEqual(WritingIndicator.frame(at: WritingIndicator.duration, reduceMotion: false), start)
+        XCTAssertEqual(WritingIndicator.frame(at: -1, reduceMotion: false), start)
+    }
+
+    @MainActor func testReduceMotionKeepsThePenStatic() {
+        let still = WritingIndicator.frame(at: 0, reduceMotion: true)
+        XCTAssertEqual(still.opacity, 1)
+        for time in [0.3, 0.9, 2.0, 100.0] {
+            XCTAssertEqual(WritingIndicator.frame(at: time, reduceMotion: true), still)
         }
     }
 }
