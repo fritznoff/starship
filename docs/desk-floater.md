@@ -115,7 +115,7 @@ The regular app reveals it only while hovering over the floater; beta always sho
 Both channels reserve the same prefix space, so the numeral stays anchored in the same position.
 The single source-controlled counter is `FloaterGeneration.current` in `desk-floater/Sources/DeskFloater.swift`.
 Before each new regular release, increment that counter by one and commit it before building the release.
-Beta builds use the generation of the main source they are built from, with no separate beta count.
+Beta displays the next generation, derived as that same counter plus one: when the regular app shows II, beta shows β III.
 The release helper does not increment it automatically: rebuilding the same release or beta must not consume another generation.
 
 ## Activating the floater

@@ -377,6 +377,13 @@ final class FloaterGenerationTests: XCTestCase {
         XCTAssertGreaterThan(FloaterGeneration.current, 0)
     }
 
+    func testBetaDisplaysTheNextGenerationFromTheSameCounter() {
+        let regular = GenerationMark(beta: false, hovered: true)
+        let beta = GenerationMark(beta: true, hovered: false)
+        XCTAssertEqual(regular.generation, FloaterGeneration.current)
+        XCTAssertEqual(beta.generation, FloaterGeneration.current + 1)
+    }
+
     @MainActor func testBetaPrefixAndHoverNeverResizeTheGenerationMark() {
         let regular = NSHostingView(rootView: GenerationMark(beta: false, hovered: true))
         let beta = NSHostingView(rootView: GenerationMark(beta: true, hovered: false))

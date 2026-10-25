@@ -2109,20 +2109,27 @@ struct GenerationMark: View {
     let beta: Bool
     let hovered: Bool
 
+    var generation: Int { FloaterGeneration.current + (beta ? 1 : 0) }
+
     var body: some View {
         HStack(spacing: 2) {
             Text("β")
                 .frame(width: 7, alignment: .trailing)
                 .opacity(beta ? 1 : 0)
-            Text(FloaterGeneration.roman(FloaterGeneration.current))
-                .opacity(beta || hovered ? 1 : 0)
+            ZStack(alignment: .leading) {
+                // Reserve both generations so changing channel never shifts the corner.
+                Text(FloaterGeneration.roman(FloaterGeneration.current)).hidden()
+                Text(FloaterGeneration.roman(FloaterGeneration.current + 1)).hidden()
+                Text(FloaterGeneration.roman(generation))
+                    .opacity(beta || hovered ? 1 : 0)
+            }
         }
         .font(.system(size: 11, weight: .semibold, design: .serif))
         .foregroundStyle(.white.opacity(0.75))
         .frame(height: 14)
         .animation(.easeInOut(duration: 0.15), value: hovered)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(beta ? "Beta, " : "")generation \(FloaterGeneration.current)")
+        .accessibilityLabel("\(beta ? "Beta, " : "")generation \(generation)")
         .accessibilityHidden(!beta && !hovered)
     }
 }
