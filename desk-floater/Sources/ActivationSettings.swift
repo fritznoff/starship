@@ -3,11 +3,11 @@ import SwiftUI
 
 /// Device-dependent flags distinguish both sides of each supported modifier.
 struct ActivationShortcut: Equatable {
-    static let choices: [(name: String, bit: UInt)] = [
-        ("Left Command", 0x08), ("Right Command", 0x10),
-        ("Left Option", 0x20), ("Right Option", 0x40),
-        ("Left Shift", 0x02), ("Right Shift", 0x04),
-        ("Left Control", 0x01), ("Right Control", 0x2000)
+    static let choices: [(name: String, bit: UInt, glyph: String)] = [
+        ("Left Command", 0x08, "⌘"), ("Right Command", 0x10, "⌘"),
+        ("Left Option", 0x20, "⌥"), ("Right Option", 0x40, "⌥"),
+        ("Left Shift", 0x02, "⇧"), ("Right Shift", 0x04, "⇧"),
+        ("Left Control", 0x01, "⌃"), ("Right Control", 0x2000, "⌃")
     ]
     static let defaultBits: UInt = 0x10 | 0x40 | 0x04
     static let defaultsKey = "activationShortcut"
@@ -37,6 +37,17 @@ struct ActivationShortcut: Equatable {
     var name: String {
         Self.choices.filter { bits & $0.bit != 0 }.map(\.name).joined(separator: " + ")
     }
+
+    /// Side-specific glyphs for both the shortcut display and its accessible help.
+    static func glyphs(for bits: UInt) -> String {
+        choices.compactMap { choice in
+            guard bits & choice.bit != 0 else { return nil }
+            let side = choice.name.hasPrefix("Right") ? "R" : ""
+            return "\(side)\(choice.glyph)"
+        }.joined(separator: " ")
+    }
+
+    var glyphs: String { Self.glyphs(for: bits) }
 
     var warning: String? {
         bits & Self.defaultBits == 0 ? nil

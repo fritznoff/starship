@@ -108,6 +108,16 @@ A valid signing identity is required; an unsigned or failed build does not repla
 Rerunning the command quits and updates only beta, never the regular app; reopen beta to change its shortcut.
 The launcher's `--help` owns exact install and build locations.
 
+## App generation
+
+The lower-left Roman numeral identifies the app's generation: I, II, III and so on, beginning at I for this change.
+The regular app reveals it only while hovering over the floater; beta always shows β immediately to its left.
+Both channels reserve the same prefix space, so the numeral stays anchored in the same position.
+The single source-controlled counter is `FloaterGeneration.current` in `desk-floater/Sources/DeskFloater.swift`.
+Before each new regular release, increment that counter by one and commit it before building the release.
+Beta builds use the generation of the main source they are built from, with no separate beta count.
+The release helper does not increment it automatically: rebuilding the same release or beta must not consume another generation.
+
 ## Activating the floater
 
 The floater starts hidden, and while it is hidden none of the hotkeys below do anything.
@@ -142,27 +152,30 @@ The microphone is made ready when the floater appears, not at launch, so the fir
 ## Cancelling a capture
 
 Press Escape while recording, transcribing, or waiting to send to discard the pending voice message, dictation and stacked screenshots together.
-A ready transcript waits two seconds with “Sending in 2s - Esc to cancel” before it can be sent, typed, pasted or put in the delivery mailbox.
-Screenshots keep their existing three-second stack window after the last image finishes, with an Escape reminder; that whole window is cancellable too.
-The floater briefly shows “Cancelled”, deletes the pending audio and screenshots rather than saving them for retry, and ignores any transcription or screenshot result still arriving.
+A ready transcript waits two seconds before it can be sent, typed, pasted or put in the delivery mailbox; the main button's tooltip and accessibility value include the countdown and Escape reminder.
+Screenshots keep their existing three-second stack window after the last image finishes; that whole window is cancellable too.
+Cancellation deletes the pending audio and screenshots rather than saving them for retry, ignores any transcription or screenshot result still arriving, and briefly reports “Cancelled” in the main button's tooltip and accessibility value.
 Escape is only observed through the existing Accessibility key monitoring: it still reaches the focused app unchanged, and does nothing to the floater when nothing is pending.
 Once delivery has begun, Escape cannot recall it or remove a message already in the mailbox.
 
 ## Controls
 
-Drag the floater by its dark backing plate, the status line under the buttons, or the move handle (four small arrows) in its bottom-right corner.
+Drag the floater by its dark backing plate or the move handle (four small arrows) in its bottom-right corner.
 The handle is only for dragging, clear of every button, and the pointer turns into the four-way move cursor over it.
 Every button waits for the pointer to rest on it for a moment and then shows a short tip saying what it does.
+The floater itself is icon-only: results, errors and cancellation hints live in tooltips and accessibility help rather than visible status labels.
+Hover over the floater to reveal centered R⌥ and R⇧ shortcuts over faded microphone and camera icons.
+During recording, white amplitude bars stay visible instead; pending transcription uses a small writing animation that becomes static with Reduce Motion.
 
 | Control | What it does |
 | --- | --- |
 | Large round button | Talk to Firstmate: hold, speak, release; or click once to start and click again to send. Double-click also toggles. |
 | Stop (square) | Stops the reply being spoken now, and drops any reply queued to be spoken after it. Runs `bin/fm-speak.sh --stop`. |
-| Repeat (circular arrow) | Speaks the last spoken reply again. Runs `bin/fm-speak.sh --repeat`; the status line says "Nothing to repeat" when nothing has been spoken yet, and "Voice muted" (without repeating) while the voice is muted. |
-| Recent replies (dropdown arrow, right edge) | Opens a list of the last 10 spoken replies, newest first, each with its time and the start of its text; hover over one to read all of it. Click a reply to hear it again. Stop and Mute work on it as on Repeat, and while muted a click stays silent and the status line says "Voice muted". Click the arrow again to close the list. Runs `bin/fm-speak.sh --history` and `--replay <number>`. |
+| Repeat (circular arrow) | Speaks the last spoken reply again through `bin/fm-speak.sh --repeat`, or reports "Nothing to repeat" / "Voice muted" in the main button's tooltip without speaking when unavailable or muted. |
+| Recent replies (dropdown arrow, right edge) | Opens icon-only play buttons for the last 10 replies, newest first, with dates and text in their tooltips; click to replay, use Stop/Mute as usual, or click the arrow to close, using `bin/fm-speak.sh --history` and `--replay <number>`. |
 | Mute (speaker) | Toggles voice off and on. While muted the icon is a crossed-out speaker on an orange circle, every reply stays text-only, and a reply playing at the moment you mute stops. Runs `bin/fm-speak.sh --mute` / `--unmute`; the setting is per home and survives restarting the floater. |
-| Voice volume (right-click or Control-click the speaker) | Opens a slider below the controls that sets how loud the voice is compared with everything else on the Mac: 100% is the system volume, lower is quieter than other audio, and up to 200% is louder. The Mac's own volume is never changed, the new level applies from the next spoken line, and Reset returns to 100%. Right-click or Control-click again to close it. Runs `bin/fm-speak.sh --volume` / `--volume <percent>`; the level is per home and survives restarting the floater. |
-| Camera (bottom right of the small controls) | Takes a screenshot for Firstmate. See [Screenshots](#screenshots). A number on it counts the shots waiting to be sent; an orange "!" means the Screen Recording permission is missing, and clicking it opens permission guidance. |
+| Voice volume (right-click or Control-click the speaker) | Opens or closes an icon-only slider (percentage in its tooltip) from 0% to 200% of system volume without changing the Mac's own volume; changes apply from the next line and persist per home through `bin/fm-speak.sh --volume` / `--volume <percent>`, with the reset arrow returning to 100%. |
+| Camera (bottom right of the small controls) | Takes a [screenshot](#screenshots) for Firstmate; a stack icon means shots are waiting, while an orange exclamation icon means Screen Recording is missing and clicking opens permission guidance. |
 
 Repeat and the recent list play a reply as soon as you click, from the audio kept when it was first spoken, rather than waiting for Deepgram to make it again.
 A reply with no kept audio, such as one spoken by macOS `say`, is spoken again the ordinary way.
@@ -205,7 +218,7 @@ Dictation types what you say into whatever text box has the cursor: this termina
 
 1. Put the cursor where the text should go.
 2. Tap Right Command.
-   The large button turns purple and the status line reads "Dictating…" while it listens.
+   The large button turns purple and its white bars pulse with microphone amplitude while it listens.
 3. Speak, then tap Right Command again.
    The audio is transcribed through the same Deepgram path, and the text is pasted where the cursor is.
    When the cursor is in the Firstmate chat, the text is sent instead (see [Dictating into the Firstmate chat](#dictating-into-the-firstmate-chat)).
@@ -213,12 +226,12 @@ Dictation types what you say into whatever text box has the cursor: this termina
 The paste puts the text on the clipboard, sends Command-V to the app you are typing in, then puts back whatever the clipboard held before.
 The dictated text is marked transient so clipboard-history tools skip it, and anything a password manager marked concealed or transient is not put back: the clipboard is left without it, so the password manager's own clear-after timer still applies.
 If something else is copied during that moment, the floater leaves the new clipboard contents alone.
-Without the Accessibility permission the text is left on the clipboard instead and the status line reads "Copied - press ⌘V".
+Without the Accessibility permission the text is left on the clipboard instead, and the main button's tooltip reports "Copied - press ⌘V".
 Clicking a floater control does not take keyboard focus from the app you are typing in.
 
 ### Dictating into the Firstmate chat
 
-When the text box with the cursor is the Firstmate chat itself, dictation sends the text the way talking to Firstmate does: it is typed into the chat and submitted, and the status line reads `Sent`.
+When the text box with the cursor is the Firstmate chat itself, dictation sends the text the way talking to Firstmate does: it is typed into the chat and submitted, and the main button's tooltip reports `Sent`.
 It takes the same path and the same safety checks, so a chat showing a question or a permission prompt gets nothing and the text goes to the mailbox instead, see [How transcripts reach Firstmate](#how-transcripts-reach-firstmate).
 In every other app, and in any other terminal tab or pane, dictation only pastes, and never presses Return.
 
@@ -228,14 +241,14 @@ The floater treats the cursor as being in the Firstmate chat only when all of th
 - That session shows the primary Firstmate's pane as its focused pane.
 
 Terminal is the only app the floater can ask which tab is in front, so dictation into a Firstmate chat shown in any other terminal app is only pasted.
-Asking Terminal needs the Automation permission (see [Permissions](#permissions)); without it, the floater cannot tell which tab is in front, so any dictation with Terminal in front is only pasted and the status line reads "Typed, not sent - allow Terminal", even in a tab that is not the Firstmate chat.
+Asking Terminal needs the Automation permission (see [Permissions](#permissions)); without it, the floater cannot tell which tab is in front, so any dictation with Terminal in front is only pasted and the main button's tooltip reports "Typed, not sent - allow Terminal", even in a tab that is not the Firstmate chat.
 `bin/fm-desk-voice.sh`'s header owns how the chat is recognised.
 
 ## Screenshots
 
 Tap Right Shift, or click the Camera control, to take a screenshot of the whole display under the mouse pointer.
 Take several in a row, moving the pointer to another display in between if you like: they stack, and about three seconds after the last one they are sent to Firstmate together as one message, with nothing more to press.
-The camera shows how many are stacked, the status line reads "2 shots stacked", then "Sent" once they are delivered.
+The camera shows a stack icon while shots wait; their count and delivery outcome are available in the main button's tooltip and accessibility value.
 
 The message names each image by its full path, for example `Screenshots: /…/state/desk-voice/shots/<time>-<id>.png /…/<time>-<id>.png`, so Firstmate can open them.
 A message with screenshots, with or without words, travels the same way as a voice message: typed into the Firstmate chat, or saved to the mailbox when that chat cannot be reached or, for screenshots alone, holds text you have not sent yet, see [How transcripts reach Firstmate](#how-transcripts-reach-firstmate).
@@ -245,7 +258,7 @@ Screenshots combine with talk-to-Firstmate:
 - Shots taken while Right Option is held, or while the large button is recording, go with that voice message.
 - Shots still stacking when you start talking wait and go with the voice message too.
 - Shots taken after you finish talking, while the message is still being transcribed, join it; the message then waits until three seconds after the last shot.
-- Talking again while a message waits for its shots ("Adding shots…" on the status line) adds the new words after the first ones, and the wait starts over from the end of that talk.
+- Talking again while a message waits for its shots ("Adding shots" in the main button's tooltip) adds the new words after the first ones, and the wait starts over from the end of that talk.
 
 The words and the image paths arrive as one message, the transcript first, then the `Screenshots:` paths (on one typed line in the chat, on a line of their own in the mailbox).
 A voice message with no shots stacked is sent as soon as it is transcribed, so a shot taken after it has already gone is sent on its own.
@@ -280,7 +293,7 @@ Microphone and Automation use the system prompt or an existing switch instead; m
 If the Settings window position cannot be read, the helper falls back to a fixed position near the bottom of the screen.
 It stays within the screen, hides while another app is in front, and can be closed independently; closing the permissions window also dismisses it.
 
-Until Accessibility is granted, the hotkeys and paste are off, an orange "!" sits on the talk button, and the status reads "Keys off - click !".
+Until Accessibility is granted, the hotkeys and paste are off and an orange exclamation icon sits on the talk button; its tooltip explains how to allow them.
 The on-screen buttons still work.
 The floater checks Accessibility every few seconds and enables the hotkeys as soon as it is granted, without restarting.
 Screen Recording has its own orange "!" on the Camera control; screenshots remain off until it is granted.
@@ -348,7 +361,7 @@ When the chat pane cannot be reached, is not showing its chat input, or refuses 
 
 A transcript reaches Firstmate one way only.
 Text that was typed and submitted, even when the submit could not be confirmed, is never also saved to the mailbox.
-The floater shows which way it went: `Sent`, `Sent, unconfirmed`, or `Saved for Firstmate` when it went to the mailbox, which stays on the status line a little longer so it is not mistaken for an unsent message.
+The main button's tooltip and accessibility value report which way it went: `Sent`, `Sent, unconfirmed`, or `Saved for Firstmate` when it went to the mailbox.
 
 A message saved to the mailbox also rings Firstmate, the way a captain inbox note does, so a busy Firstmate picks it up within seconds rather than when its current task ends.
 The ring is one short line typed into the Firstmate chat asking it to collect the mailbox now; it carries none of your words.
@@ -375,18 +388,18 @@ Recordings are made in this home's private `state/desk-voice/recording/` and rem
 
 When the words do not arrive, the recording is saved instead:
 
-- Transcription failed, for example because the network or Deepgram was down, for a recording at least half a second long. A shorter one shows `Transcribe failed` and is not kept.
-- Transcription came back with no words from a recording at least two seconds long. A shorter one is taken as a stray press, shows `No speech`, and is not kept.
+- Transcription failed, for example because the network or Deepgram was down, for a recording at least half a second long. A shorter one reports `Transcribe failed` in the tooltip and is not kept.
+- Transcription came back with no words from a recording at least two seconds long. A shorter one is taken as a stray press, reports `No speech` in the tooltip, and is not kept.
 - The message could not be delivered at all.
 
-A recording that comes out near silent is the exception: the microphone delivered nothing usable, so it is neither transcribed nor kept, and the status line reads `Mic silent - not sent` at once, so you can check the microphone and say it again.
+A recording that comes out near silent is the exception: the microphone delivered nothing usable, so it is neither transcribed nor kept, and the main button's tooltip reports `Mic silent - not sent` at once, so you can check the microphone and say it again.
 `desk-floater/Sources/Recordings.swift` owns what counts as near silent.
 
 Saved recordings go to `state/desk-voice/unsent/`, readable only by your own account.
-A talk-to-Firstmate recording is tried again by the floater itself after about 20 seconds, a minute and five minutes, and the status line reads `Saved - retrying` meanwhile.
-One that works on a retry is sent to Firstmate as usual, a little later than you spoke it, and the status line says how it went.
-After the last automatic try the status line reads `Saved, not sent` and the recording stays saved.
-A dictation is not tried again by itself, since its words belong where your cursor was when you spoke: the status line reads `Saved, not sent` and the recording stays saved until you retry it.
+A talk-to-Firstmate recording is tried again by the floater itself after about 20 seconds, a minute and five minutes, and the main button's tooltip reports `Saved - retrying` meanwhile.
+One that works on a retry is sent to Firstmate as usual, a little later than you spoke it, and the main button's tooltip reports how it went.
+After the last automatic try the main button's tooltip reports `Saved, not sent` and the recording stays saved.
+A dictation is not tried again by itself, since its words belong where your cursor was when you spoke: the main button's tooltip reports `Saved, not sent` and the recording stays saved until you retry it.
 Words held back for screenshots that then fail to send are saved and retried the same way, without the screenshots, which stay in `state/desk-voice/shots/`.
 If the floater stops while a recording is being made or transcribed, it saves that recording the next time it starts, unless it is near silent, and, for talk to Firstmate, tries it again.
 
@@ -404,9 +417,9 @@ A saved recording is never removed by itself: it goes only once its words are de
 ### Long messages
 
 A message has no length limit: a ten-minute recording is transcribed whole and arrives like any other.
-A long one takes longer to transcribe, and the status line reads `Transcribing…` until it is done.
+A long one takes longer to transcribe, and a small writing animation runs in the main button until it is done.
 The transcription request cannot hang: each attempt gives up after a time that grows with the recording, about five minutes for a ten-minute one, so a slow connection still has time to send a long recording.
-An attempt on which nothing has moved for 20 seconds, a little longer for a long recording, also gives up: Deepgram now and then takes a recording and never answers, and the retry usually answers at once, so a short message is not left on `Transcribing…` for minutes.
+An attempt on which nothing has moved for 20 seconds, a little longer for a long recording, also gives up: Deepgram now and then takes a recording and never answers, and the retry usually answers at once, so a short message does not wait for transcription for minutes.
 A stalled or timed-out attempt, a dropped connection or a busy Deepgram is retried twice, so a ten-minute recording waits about 16 minutes at worst before it fails.
 A recording whose transcription still fails is saved and retried as above.
 `bin/fm-deepgram-stt.sh`'s header owns those limits.

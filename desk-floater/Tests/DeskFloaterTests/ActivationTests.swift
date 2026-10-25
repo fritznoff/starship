@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import DeskFloater
 
@@ -278,5 +279,84 @@ final class ActivationTests: XCTestCase {
         activation.used(at: at(60))
         XCTAssertFalse(activation.tick(at: at(61), busy: false), "sending a message does not hide the floater")
         XCTAssertTrue(activation.isActive)
+    }
+}
+
+final class ShortcutHintTests: XCTestCase {
+    func testGlyphsKeepBothSidesAndAllSupportedModifiers() {
+        XCTAssertEqual(ActivationShortcut.glyphs(for: TalkKey.bit), "R⌥")
+        XCTAssertEqual(ActivationShortcut.glyphs(for: TapKey.rightCommand.bit), "R⌘")
+        XCTAssertEqual(ActivationShortcut.glyphs(for: TapKey.rightShift.bit), "R⇧")
+        XCTAssertEqual(ActivationShortcut.glyphs(for: 0x01 | 0x2000), "⌃ R⌃")
+        XCTAssertEqual(ActivationShortcut.glyphs(for: 0x08 | 0x20 | 0x02), "⌘ ⌥ ⇧")
+    }
+
+    @MainActor func testHintsFollowActualShortcutChangesWithoutRestarting() {
+        let monitor = HotkeyMonitor()
+        let model = FloaterModel(repoRoot: "/unused", fmHome: "/unused")
+        monitor.onShortcutChanged = { model.activationShortcut = $0 }
+        let alternate = ActivationShortcut(bits: 0x01 | 0x20)!
+        monitor.activationShortcut = alternate
+        XCTAssertEqual(model.activationShortcut, alternate)
+        XCTAssertTrue(model.shortcutHelp.contains("Show / hide: ⌥ ⌃"))
+        XCTAssertTrue(model.shortcutHelp.contains("Talk: hold R⌥"))
+        XCTAssertTrue(model.shortcutHelp.contains("Dictate: tap R⌘"))
+        XCTAssertTrue(model.status.isEmpty)
+        XCTAssertTrue(model.idleStatus.isEmpty)
+    }
+
+    @MainActor func testMeterStopsAndClearsWhenRecordingEnds() async throws {
+        let model = FloaterModel(repoRoot: "/unused", fmHome: "/unused")
+        model.mode = .recording
+        model.microphoneLevel = 0.9
+        model.mode = .busy
+        XCTAssertEqual(model.microphoneLevel, 0)
+        model.microphoneLevel = 0.7
+        try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(model.microphoneLevel, 0.7, "no meter updates outside recording")
+        model.mode = .idle
+        XCTAssertEqual(model.microphoneLevel, 0)
+    }
+}
+
+final class IconOnlyFloaterTests: XCTestCase {
+    @MainActor func testBetaMarkRequiresTheExactBetaBundleIdentifier() {
+        XCTAssertTrue(FloaterView.isBeta(bundleIdentifier: "com.firstmate.desk-floater.beta"))
+        for identifier in [nil, "com.firstmate.desk-floater", "com.firstmate.desk-floater.build-only",
+                           "com.firstmate.desk-floater.beta.preview"] as [String?] {
+            XCTAssertFalse(FloaterView.isBeta(bundleIdentifier: identifier))
+        }
+    }
+
+    @MainActor func testWritingMovesAcrossTheLineAndReduceMotionFreezesIt() {
+        XCTAssertEqual(WritingIndicator.progress(at: 0, reduceMotion: false), 0)
+        XCTAssertEqual(WritingIndicator.progress(at: 0.6, reduceMotion: false), 0.5, accuracy: 0.00001)
+        XCTAssertEqual(WritingIndicator.progress(at: 1.2, reduceMotion: false), 0)
+        for time in [0.0, 0.3, 0.9, 2.0, 100.0] {
+            XCTAssertEqual(WritingIndicator.progress(at: time, reduceMotion: true), 0.65)
+        }
+    }
+}
+
+final class FloaterGenerationTests: XCTestCase {
+    func testRomanNumeralsCountUpAndUseSubtractiveNotation() {
+        let cases = [(1, "I"), (2, "II"), (3, "III"), (4, "IV"), (5, "V"), (9, "IX"),
+                     (14, "XIV"), (19, "XIX"), (40, "XL"), (49, "XLIX"), (90, "XC"),
+                     (400, "CD"), (944, "CMXLIV"), (2026, "MMXXVI"), (3999, "MMMCMXCIX")]
+        for (number, expected) in cases {
+            XCTAssertEqual(FloaterGeneration.roman(number), expected)
+        }
+        XCTAssertEqual(FloaterGeneration.roman(0), "")
+        XCTAssertEqual(FloaterGeneration.roman(-1), "")
+        XCTAssertGreaterThan(FloaterGeneration.current, 0)
+    }
+
+    @MainActor func testBetaPrefixAndHoverNeverResizeTheGenerationMark() {
+        let regular = NSHostingView(rootView: GenerationMark(beta: false, hovered: true))
+        let beta = NSHostingView(rootView: GenerationMark(beta: true, hovered: false))
+        let hidden = NSHostingView(rootView: GenerationMark(beta: false, hovered: false))
+        XCTAssertGreaterThan(regular.fittingSize.width, 9, "the beta prefix slot precedes the numeral")
+        XCTAssertEqual(regular.fittingSize, beta.fittingSize, "beta reserves exactly the same prefix slot")
+        XCTAssertEqual(regular.fittingSize, hidden.fittingSize, "hover cannot shift the fixed numeral anchor")
     }
 }

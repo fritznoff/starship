@@ -104,6 +104,25 @@ final class VoiceCaptureTests: XCTestCase {
         return Double(file.length) / file.fileFormat.sampleRate
     }
 
+    func testLiveMeterComesFromTheTapAndResetsOnStop() throws {
+        let capture = makeCapture()
+        XCTAssertEqual(capture.microphoneLevel, 0)
+        try capture.warm()
+        XCTAssertEqual(capture.microphoneLevel, 0, "warming never starts the microphone")
+        try capture.start(writingTo: newFile())
+        built.last!.speak(0.1)
+        XCTAssertGreaterThan(capture.microphoneLevel, 0.9)
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(capture.microphoneLevel, 0, "stalled audio must decay to silence")
+        built.last!.speak(0.1)
+        XCTAssertGreaterThan(capture.microphoneLevel, 0.9)
+        capture.stop()
+        XCTAssertEqual(capture.microphoneLevel, 0)
+        try capture.start(writingTo: newFile())
+        XCTAssertEqual(capture.microphoneLevel, 0, "no stale pulse from the previous capture")
+        capture.stop()
+    }
+
     func testEveryCaptureReusesTheEngineBuiltBeforeTheFirstPress() throws {
         let capture = makeCapture()
         try capture.warm()
@@ -259,5 +278,54 @@ final class ReferenceOutputTests: XCTestCase {
     func testWithoutBuiltInSpeakersMacOSKeepsItsChoice() {
         XCTAssertNil(ReferenceOutput.choose(defaultOutput: multiOutput.id, devices: [blackHole, multiOutput, usb]))
         XCTAssertNil(ReferenceOutput.choose(defaultOutput: 99, devices: [speakers]), "an unknown default is left alone")
+    }
+}
+
+final class SpeechLevelTests: XCTestCase {
+    func testMeterReadsOnlyTheProcessedChannelAndHandlesSilence() {
+        for interleaved in [false, true] {
+            let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
+                                       channels: 2, interleaved: interleaved)!
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 100)!
+            buffer.frameLength = 100
+            for frame in 0..<100 {
+                buffer.floatChannelData![0][frame * buffer.stride] = 0
+                if interleaved {
+                    buffer.floatChannelData![0][frame * buffer.stride + 1] = 1
+                } else {
+                    buffer.floatChannelData![1][frame] = 1
+                }
+            }
+            XCTAssertEqual(SpeechLevel.amplitude(buffer), 0, "other channels cannot light the bars")
+            for frame in 0..<100 {
+                buffer.floatChannelData![0][frame * buffer.stride] = 0.03
+            }
+            let quiet = SpeechLevel.amplitude(buffer)
+            XCTAssertGreaterThan(quiet, 0.4)
+            XCTAssertLessThan(quiet, 0.7)
+            for frame in 0..<100 {
+                buffer.floatChannelData![0][frame * buffer.stride] = 0.4
+            }
+            XCTAssertEqual(SpeechLevel.amplitude(buffer), 1)
+            buffer.frameLength = 0
+            XCTAssertEqual(SpeechLevel.amplitude(buffer), 0)
+        }
+    }
+
+    func testFastAttackQuickDecayAndFrameRateIndependence() {
+        var meter = SpeechLevel()
+        XCTAssertGreaterThan(meter.update(target: 1, elapsed: 1.0 / 45), 0.5)
+        let high = meter.update(target: 1, elapsed: 1.0 / 45)
+        XCTAssertGreaterThan(high, 0.8)
+        let decayed = meter.update(target: 0, elapsed: 1.0 / 45)
+        XCTAssertLessThan(decayed, high)
+        XCTAssertGreaterThan(decayed, 0.5)
+        XCTAssertLessThan(meter.update(target: 0, elapsed: 0.3), 0.03)
+        XCTAssertEqual(meter.update(target: .nan, elapsed: 1), 0)
+        var slow = SpeechLevel()
+        var fast = SpeechLevel()
+        for _ in 0..<30 { _ = slow.update(target: 0.8, elapsed: 1.0 / 30) }
+        for _ in 0..<60 { _ = fast.update(target: 0.8, elapsed: 1.0 / 60) }
+        XCTAssertEqual(slow.value, fast.value, accuracy: 0.00001)
     }
 }

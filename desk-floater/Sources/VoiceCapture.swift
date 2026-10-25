@@ -60,6 +60,15 @@ final class VoiceCapture {
     private var file: AVAudioFile?
     private var converter: CaptureConverter?
     private var finishing: DispatchWorkItem?
+    private var level: Double = 0
+    private var levelAt: TimeInterval = 0
+
+    /// The processed microphone's latest amplitude; silence if buffers stop arriving.
+    var microphoneLevel: Double {
+        lock.withLock {
+            ProcessInfo.processInfo.systemUptime - levelAt < 0.15 ? level : 0
+        }
+    }
 
     init(makeEngine: @escaping () throws -> CaptureEngine = { try VoiceEngine() }) {
         self.makeEngine = makeEngine
@@ -142,12 +151,16 @@ final class VoiceCapture {
         lock.withLock {
             file = nil
             converter = nil
+            level = 0
         }
     }
 
     private func write(_ buffer: AVAudioPCMBuffer) {
         lock.withLock {
-            guard let file, let converter, let out = converter.convert(buffer) else { return }
+            guard let file, let converter else { return }
+            level = SpeechLevel.amplitude(buffer)
+            levelAt = ProcessInfo.processInfo.systemUptime
+            guard let out = converter.convert(buffer) else { return }
             try? file.write(from: out)
         }
     }
@@ -258,7 +271,7 @@ final class VoiceEngine: CaptureEngine {
 
     func installTap(_ block: @escaping (AVAudioPCMBuffer) -> Void) {
         let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0)) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
             block(buffer)
         }
     }
@@ -360,5 +373,34 @@ final class CaptureConverter {
         }
         guard status != .error, out.frameLength > 0 else { return nil }
         return out
+    }
+}
+
+/// Meter only the processed voice channel, just like the transcription converter.
+struct SpeechLevel {
+    private(set) var value: Double = 0
+
+    static func amplitude(_ buffer: AVAudioPCMBuffer) -> Double {
+        guard buffer.frameLength > 0, let samples = buffer.floatChannelData else { return 0 }
+        var squares = 0.0
+        var peak = 0.0
+        for frame in 0..<Int(buffer.frameLength) {
+            let sample = Double(samples[0][frame * buffer.stride])
+            guard sample.isFinite else { continue }
+            squares += sample * sample
+            peak = max(peak, abs(sample))
+        }
+        let rms = sqrt(squares / Double(buffer.frameLength))
+        let decibels = 20 * log10(max(rms, peak * 0.35, 0.00001))
+        return min(1, max(0, (decibels + 55) / 45))
+    }
+
+    /// Fast attack, short decay, independent of display refresh rate.
+    mutating func update(target: Double, elapsed: TimeInterval) -> Double {
+        let target = target.isFinite ? min(1, max(0, target)) : 0
+        let timeConstant = target > value ? 0.025 : 0.09
+        value += (target - value) * (1 - exp(-max(0, elapsed) / timeConstant))
+        if value < 0.001 { value = 0 }
+        return value
     }
 }

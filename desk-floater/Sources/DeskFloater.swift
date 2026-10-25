@@ -61,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let hotkeys = HotkeyMonitor()
         hotkeys.settingsVisible = { [weak self] in self?.activationSettings.isVisible == true }
+        model.activationShortcut = hotkeys.activationShortcut
+        hotkeys.onShortcutChanged = { [weak model] in model?.activationShortcut = $0 }
         hotkeys.onTalkDown = { [weak model] in model?.hotkeyTalkBegan() }
         hotkeys.onTalkUp = { [weak model] in model?.hotkeyTalkEnded() }
         hotkeys.onTalkChord = { [weak model] in model?.hotkeyTalkChorded() }
@@ -352,6 +354,8 @@ struct TalkKey {
         case begin, deliver, drop
     }
 
+    static let keyCode: UInt16 = 61
+    static let bit: UInt = 0x40
     let shortcutWindow: TimeInterval
     private var downAt: Date?
 
@@ -459,9 +463,6 @@ final class HotkeyMonitor {
     /// The hotkeys act only while this is on; the activation chord always does.
     var hotkeysEnabled = false
 
-    private static let rightOptionKey: UInt16 = 61
-    // Device-dependent modifier bit that tells the right-hand key from the left.
-    private static let rightOptionBit: UInt = 0x40
     private let tapLimit: TimeInterval = 0.5
 
     private var monitors: [Any] = []
@@ -471,9 +472,11 @@ final class HotkeyMonitor {
     private var dictateKey = TapKey.rightCommand
     private var shotKey = TapKey.rightShift
     var settingsVisible: (() -> Bool)?
+    var onShortcutChanged: ((ActivationShortcut) -> Void)?
     var activationShortcut = ActivationShortcut.load() {
         didSet {
             chord = ActivationChord(bits: activationShortcut.bits)
+            onShortcutChanged?(activationShortcut)
             resetHotkeys()
         }
     }
@@ -561,8 +564,8 @@ final class HotkeyMonitor {
             }
             return
         }
-        if event.keyCode == Self.rightOptionKey {
-            let down = event.modifierFlags.rawValue & Self.rightOptionBit != 0
+        if event.keyCode == TalkKey.keyCode {
+            let down = event.modifierFlags.rawValue & TalkKey.bit != 0
             switch talkKey.update(down: down, at: at) {
             case .begin:
                 onTalkDown?()
@@ -1086,9 +1089,20 @@ final class FloaterModel: ObservableObject {
         case dictate
     }
 
-    @Published var mode: Mode = .idle
+    @Published var mode: Mode = .idle {
+        didSet { if mode != oldValue { refreshMeter() } }
+    }
+    @Published var microphoneLevel: Double = 0
+    @Published var activationShortcut = ActivationShortcut.load()
+
+    var talkHint: String { ActivationShortcut.glyphs(for: TalkKey.bit) }
+    var dictationHint: String { ActivationShortcut.glyphs(for: TapKey.rightCommand.bit) }
+    var shotHint: String { ActivationShortcut.glyphs(for: TapKey.rightShift.bit) }
+    var shortcutHelp: String {
+        "Talk: hold \(talkHint)\nDictate: tap \(dictationHint)\nShow / hide: \(activationShortcut.glyphs)"
+    }
     @Published var purpose: Purpose = .firstmate
-    @Published var status: String = "Hold to talk"
+    @Published var status: String = ""
     @Published var voiceOutAvailable = false
     @Published var muted = false
     /// The spoken voice's level as a percentage of the system volume.
@@ -1122,6 +1136,27 @@ final class FloaterModel: ObservableObject {
     private var fromHotkey = false
     private let tapWindow: TimeInterval = 0.3
     private var muteTimer: Timer?
+    private var meterTimer: Timer?
+    private var meter = SpeechLevel()
+    private var meterAt: TimeInterval = 0
+
+    private func refreshMeter() {
+        meterTimer?.invalidate()
+        meterTimer = nil
+        meter = SpeechLevel()
+        microphoneLevel = 0
+        guard mode == .recording else { return }
+        meterAt = ProcessInfo.processInfo.systemUptime
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 45, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                self.microphoneLevel = self.meter.update(target: self.capture.microphoneLevel,
+                                                         elapsed: now - self.meterAt)
+                self.meterAt = now
+            }
+        }
+    }
 
     private var activation = Activation()
     private var idleTimer: Timer?
@@ -1258,7 +1293,7 @@ final class FloaterModel: ObservableObject {
         if !retrying.isEmpty {
             return Self.savedRetrying
         }
-        return keysTrusted ? "Hold to talk" : "Keys off - click !"
+        return ""
     }
 
     /// Opens permission guidance from the keys-off badge.
@@ -1346,11 +1381,7 @@ final class FloaterModel: ObservableObject {
         heldAudio = []
         shotsChanged()
         if mode == .idle {
-            if text != nil {
-                status = "Delivering…"
-            } else {
-                status = images.count == 1 ? "Sending 1 shot…" : "Sending \(images.count) shots…"
-            }
+            status = ""
         }
         deliveries += 1
         Task.detached(priority: .userInitiated) { [repoRoot, fmHome] in
@@ -1389,7 +1420,7 @@ final class FloaterModel: ObservableObject {
     /// shots. The floater is free meanwhile, so another talk joins the same message.
     private func voiceTranscribed(_ text: String, audio: URL) {
         guard stack.hold(text) else {
-            status = "Delivering…"
+            status = ""
             deliveries += 1
             Task.detached(priority: .userInitiated) { [repoRoot, fmHome] in
                 let outcome = Self.deliver(repoRoot: repoRoot, fmHome: fmHome, text: text, images: [])
@@ -1449,7 +1480,7 @@ final class FloaterModel: ObservableObject {
             }
             if quick {
                 latched = true
-                status = "Listening… (click to stop)"
+                status = ""
             } else {
                 stopAndDeliver()
             }
@@ -1512,7 +1543,7 @@ final class FloaterModel: ObservableObject {
     // MARK: voice-out controls
 
     func stopTalking() {
-        runSpeak(["--stop"]) { ok in ok ? "Stopped" : "Stop failed" }
+        runSpeak(["--stop"]) { ok in ok ? "" : "Stop failed" }
     }
 
     func repeatLast() {
@@ -1522,7 +1553,7 @@ final class FloaterModel: ObservableObject {
             }
             return
         }
-        runSpeak(["--repeat"]) { ok in ok ? "Repeating" : "Nothing to repeat" }
+        runSpeak(["--repeat"]) { ok in ok ? "" : "Nothing to repeat" }
     }
 
     func toggleRecent() {
@@ -1541,7 +1572,7 @@ final class FloaterModel: ObservableObject {
             }
             return
         }
-        runSpeak(["--replay", String(reply.id)]) { ok in ok ? "Replaying" : "No longer kept" }
+        runSpeak(["--replay", String(reply.id)]) { ok in ok ? "" : "No longer kept" }
     }
 
     func refreshRecent() {
@@ -1571,7 +1602,7 @@ final class FloaterModel: ObservableObject {
         let wasMuted = muted
         muted.toggle()
         runSpeak([wasMuted ? "--unmute" : "--mute"]) { ok in
-            ok ? (wasMuted ? "Voice on" : "Voice muted") : "Mute failed"
+            ok ? "" : "Mute failed"
         }
     }
 
@@ -1601,7 +1632,7 @@ final class FloaterModel: ObservableObject {
         let level = VoiceVolume.clamp(level)
         voiceVolume = level
         runSpeak(["--volume", String(level)]) { ok in
-            ok ? "Voice at \(level)%" : "Volume not saved"
+            ok ? "" : "Volume not saved"
         }
     }
 
@@ -1642,18 +1673,11 @@ final class FloaterModel: ObservableObject {
     private func begin(_ purpose: Purpose) {
         self.purpose = purpose
         mode = .starting
-        status = "Starting…"
+        status = ""
         latched = false
         fromHotkey = false
         pressStartedAt = nil
         startRecording()
-    }
-
-    private var listeningStatus: String {
-        if purpose == .dictate {
-            return "Dictating… tap to end"
-        }
-        return latched ? "Listening… (click to stop)" : "Listening…"
     }
 
     private func startRecording() {
@@ -1662,8 +1686,7 @@ final class FloaterModel: ObservableObject {
             let ok = await requestMic()
             guard generation == cancelGeneration, mode == .starting else { return }
             guard ok else {
-                mode = .idle
-                status = "Mic denied"
+                finish(status: "Mic denied", for: 6)
                 onFixKeys?()
                 return
             }
@@ -1676,8 +1699,7 @@ final class FloaterModel: ObservableObject {
                 try capture.start(writingTo: url)
             } catch {
                 try? FileManager.default.removeItem(at: url)
-                mode = .idle
-                status = "Record error"
+                finish(status: "Record error", for: 6)
                 return
             }
             guard mode == .starting else {
@@ -1687,7 +1709,7 @@ final class FloaterModel: ObservableObject {
             }
             recordURL = url
             mode = .recording
-            status = listeningStatus
+            status = ""
         }
     }
 
@@ -2066,21 +2088,88 @@ final class FloaterModel: ObservableObject {
     }
 }
 
+enum FloaterGeneration {
+    static let current = 1
+
+    static func roman(_ number: Int) -> String {
+        guard number > 0 else { return "" }
+        var remaining = number
+        var result = ""
+        for (value, symbol) in [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+                                (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+                                (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")] {
+            result += String(repeating: symbol, count: remaining / value)
+            remaining %= value
+        }
+        return result
+    }
+}
+
+struct GenerationMark: View {
+    let beta: Bool
+    let hovered: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text("β")
+                .frame(width: 7, alignment: .trailing)
+                .opacity(beta ? 1 : 0)
+            Text(FloaterGeneration.roman(FloaterGeneration.current))
+                .opacity(beta || hovered ? 1 : 0)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(.white.opacity(0.75))
+        .frame(height: 14)
+        .animation(.easeInOut(duration: 0.15), value: hovered)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(beta ? "Beta, " : "")generation \(FloaterGeneration.current)")
+        .accessibilityHidden(!beta && !hovered)
+    }
+}
+
+struct WritingIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func progress(at time: TimeInterval, reduceMotion: Bool) -> Double {
+        reduceMotion ? 0.65 : time.truncatingRemainder(dividingBy: 1.2) / 1.2
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            let progress = Self.progress(at: context.date.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion)
+            ZStack {
+                Capsule()
+                    .frame(width: 2 + 14 * progress, height: 1.5)
+                    .offset(x: -7 + 7 * progress, y: 7)
+                Image(systemName: "pencil.tip")
+                    .font(.system(size: 13, weight: .semibold))
+                    .rotationEffect(.degrees(-30))
+                    .offset(x: -7 + 14 * progress, y: -1)
+            }
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+        }
+        .accessibilityLabel("Transcribing")
+    }
+}
+
 struct FloaterView: View {
     @ObservedObject var model: FloaterModel
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage(AmbientSettings.defaultsKey) private var animatedBackground = true
     let mover: WindowMover
+    @State private var hovering = false
 
     private let mainSize: CGFloat = 36
     private let controlSize: CGFloat = 20
     private let controlSpacing: CGFloat = 4
     private let rowSpacing: CGFloat = 6
     private let arrowWidth: CGFloat = 12
-    /// The status line is as wide as the row of controls above it, so the bubble
-    /// has no empty strip beside them.
     private let gripSize: CGFloat = 14
-    private var expanded: Bool { model.showingVolume || model.showingRecent }
+
+    static func isBeta(bundleIdentifier: String?) -> Bool {
+        bundleIdentifier == "com.firstmate.desk-floater.beta"
+    }
 
     /// The move handle in the bottom-right corner: in the status line's row,
     /// or in a row of its own below an open list.
@@ -2090,7 +2179,7 @@ struct FloaterView: View {
             .foregroundStyle(.white.opacity(0.6))
             .frame(width: gripSize, height: gripSize)
             .overlay { GripCatcher(mover: mover) }
-            .accessibilityLabel(GripView.help)
+            .accessibilityLabel(GripView.help + ". " + model.shortcutHelp)
     }
 
     private var rowWidth: CGFloat {
@@ -2119,28 +2208,18 @@ struct FloaterView: View {
                     shotButton
                 }
             }
-            HStack(spacing: 0) {
-                Text(model.status)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(keysOffIdle ? Color(red: 1.0, green: 0.72, blue: 0.35) : Color.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .truncationMode(.tail)
-                    .frame(width: expanded ? rowWidth : rowWidth - gripSize)
-                    .allowsHitTesting(false)
-                if !expanded {
-                    grip
-                }
-            }
             if model.voiceOutAvailable && model.showingVolume {
                 volumeControl
             }
             if model.voiceOutAvailable && model.showingRecent {
                 recentList
             }
-            if expanded {
+            HStack(spacing: 0) {
+                GenerationMark(beta: Self.isBeta(bundleIdentifier: Bundle.main.bundleIdentifier), hovered: hovering)
+                Spacer(minLength: 0)
                 grip
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(6)
         .background {
@@ -2167,6 +2246,7 @@ struct FloaterView: View {
                 )
         }
         .fixedSize()
+        .onHover { hovering = $0 }
         .onGeometryChange(for: CGSize.self) { proxy in
             proxy.size
         } action: { size in
@@ -2213,20 +2293,16 @@ struct FloaterView: View {
                 }
                 .controlSize(.mini)
                 .accessibilityLabel("Voice volume")
-                Text("\(model.voiceVolume)%")
-                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                    .frame(width: 32, alignment: .trailing)
-            }
-            HStack(spacing: 4) {
-                Text("Voice vs system volume")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer(minLength: 0)
+                .accessibilityValue("\(model.voiceVolume)%")
+                .tip("\(model.voiceVolume)% of system volume")
                 if model.voiceVolume != VoiceVolume.standard {
-                    Button("Reset") { model.setVoiceVolume(VoiceVolume.standard) }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 8, weight: .semibold))
-                        .tip("Back to the system volume (100%)")
+                    Button { model.setVoiceVolume(VoiceVolume.standard) } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .tip("Back to the system volume (100%)")
+                    .accessibilityLabel("Reset voice volume")
                 }
             }
         }
@@ -2256,8 +2332,10 @@ struct FloaterView: View {
     private var recentList: some View {
         VStack(alignment: .leading, spacing: 2) {
             if model.recent.isEmpty {
-                Text("Nothing spoken yet")
+                Image(systemName: "speaker.slash")
                     .font(.system(size: 9))
+                    .tip("Nothing spoken yet")
+                    .accessibilityLabel("Nothing spoken yet")
                     .foregroundStyle(.white.opacity(0.7))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 2)
@@ -2269,13 +2347,6 @@ struct FloaterView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "play.fill")
                             .font(.system(size: 7))
-                        Text(Self.timeLabel(reply.time))
-                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.75))
-                        Text(reply.text)
-                            .font(.system(size: 9))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(.white)
@@ -2285,7 +2356,7 @@ struct FloaterView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .tip(reply.text)
+                .tip(Self.timeLabel(reply.time) + " - " + reply.text)
                 .accessibilityLabel("Hear again: \(reply.text)")
             }
         }
@@ -2309,14 +2380,10 @@ struct FloaterView: View {
         Calendar.current.isDateInToday(time) ? clock.string(from: time) : dayClock.string(from: time)
     }
 
-    private var keysOffIdle: Bool {
-        model.mode == .idle && model.status == "Keys off - click !"
-    }
-
     private var badgeOrange: Color { Color(red: 0.90, green: 0.50, blue: 0.10) }
 
-    /// Takes a screenshot of the display under the pointer. While shots are
-    /// stacking it shows how many; without Screen Recording it shows "!" and
+    /// Takes a screenshot of the display under the pointer. Queued shots have
+    /// a stack badge; without Screen Recording it shows an exclamation icon and
     /// clicking asks macOS again.
     private var shotButton: some View {
         control(
@@ -2324,23 +2391,24 @@ struct FloaterView: View {
             help: model.screenTrusted
                 ? "Take a screenshot for Firstmate - shots close together go as one message"
                 : "Screenshots are off: macOS has not allowed this build Screen Recording. Click to allow it.",
+            shortcut: model.shotHint,
             action: model.shotButton
         )
         .overlay(alignment: .topTrailing) {
             if !model.screenTrusted {
-                badge(Text("!"), fill: badgeOrange)
+                badge("exclamationmark", fill: badgeOrange)
                     .offset(x: 4, y: -4)
                     .allowsHitTesting(false)
             } else if model.shotCount > 0 {
-                badge(Text("\(model.shotCount)"), fill: Color(red: 0.12, green: 0.45, blue: 0.85))
+                badge("square.stack.fill", fill: Color(red: 0.12, green: 0.45, blue: 0.85))
                     .offset(x: 4, y: -4)
                     .allowsHitTesting(false)
             }
         }
     }
 
-    private func badge(_ label: Text, fill: Color) -> some View {
-        label
+    private func badge(_ symbol: String, fill: Color) -> some View {
+        Image(systemName: symbol)
             .font(.system(size: 8, weight: .heavy))
             .foregroundStyle(.white)
             .frame(minWidth: 14, minHeight: 14)
@@ -2353,9 +2421,13 @@ struct FloaterView: View {
         ZStack {
             Circle()
                 .fill(color)
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
+            if model.mode == .recording {
+                speechBars
+            } else if model.mode == .busy {
+                WritingIndicator()
+            } else {
+                shortcutIcon(icon, shortcut: mainHint, size: 15, weight: .semibold)
+            }
         }
         .frame(width: mainSize, height: mainSize)
         .contentShape(Circle())
@@ -2367,14 +2439,48 @@ struct FloaterView: View {
         .onTapGesture(count: 2) {
             model.toggle()
         }
-        .tip("Talk to Firstmate - hold, or click to start and click again to send")
-        .accessibilityLabel("Desk push to talk")
+        .tip("Talk to Firstmate - hold, or click to start and click again to send\n" + model.shortcutHelp + "\n" + model.status)
+        .accessibilityLabel(model.mode == .recording ? "Recording" : model.mode == .busy ? "Transcribing" : "Desk push to talk")
+        .accessibilityValue(model.shortcutHelp + "\n" + model.status)
         .overlay(alignment: .topTrailing) {
             if !model.keysTrusted {
                 keysOffBadge
                     .offset(x: 4, y: -4)
             }
         }
+    }
+
+    private var mainHint: String {
+        model.purpose == .dictate && model.mode != .idle ? model.dictationHint : model.talkHint
+    }
+
+    /// Only shortcut-bearing icons fade; live recording bars never fade or get covered.
+    private func shortcutIcon(_ symbol: String, shortcut: String? = nil, size: CGFloat, weight: Font.Weight = .bold) -> some View {
+        ZStack {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: weight))
+                .opacity(hovering && shortcut != nil ? 0.15 : 1)
+            if let shortcut {
+                Text(shortcut)
+                    .font(.system(size: size + 1, weight: .bold))
+                    .fixedSize()
+                    .opacity(hovering ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+        }
+        .foregroundStyle(.white)
+        .animation(.easeInOut(duration: 0.15), value: hovering)
+    }
+
+    private var speechBars: some View {
+        HStack(spacing: 2) {
+            ForEach(Array([0.45, 0.8, 1.0, 0.7, 0.4].enumerated()), id: \.offset) { _, scale in
+                Capsule().fill(.white)
+                    .frame(width: 2.5, height: 3 + 16 * scale * model.microphoneLevel)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .accessibilityHidden(true)
     }
 
     /// Shown while macOS has not granted this build Accessibility, so the
@@ -2393,11 +2499,9 @@ struct FloaterView: View {
         .accessibilityLabel("Hotkeys off - allow Accessibility")
     }
 
-    private func control(_ symbol: String, help: String, tint: Color? = nil, action: @escaping () -> Void) -> some View {
+    private func control(_ symbol: String, help: String, tint: Color? = nil, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white)
+            shortcutIcon(symbol, shortcut: shortcut, size: 9)
                 .frame(width: controlSize, height: controlSize)
                 .background(Circle().fill(tint ?? Color.white.opacity(0.22)))
                 .contentShape(Circle())
@@ -2427,7 +2531,7 @@ struct FloaterView: View {
         case .idle: return "mic.fill"
         case .starting: return "mic"
         case .recording: return "waveform"
-        case .busy: return "hourglass"
+        case .busy: return "pencil.tip"
         }
     }
 }
