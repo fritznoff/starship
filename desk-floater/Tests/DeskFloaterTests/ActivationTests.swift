@@ -380,8 +380,9 @@ final class FloaterGenerationTests: XCTestCase {
     func testBetaDisplaysTheNextGenerationFromTheSameCounter() {
         let regular = GenerationMark(beta: false, hovered: true)
         let beta = GenerationMark(beta: true, hovered: false)
-        XCTAssertEqual(regular.generation, FloaterGeneration.current)
-        XCTAssertEqual(beta.generation, FloaterGeneration.current + 1)
+        XCTAssertEqual(FloaterGeneration.current, 3)
+        XCTAssertEqual(FloaterGeneration.roman(regular.generation), "III")
+        XCTAssertEqual(FloaterGeneration.roman(beta.generation), "IV")
     }
 
     @MainActor func testBetaPrefixAndHoverNeverResizeTheGenerationMark() {

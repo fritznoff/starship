@@ -2089,7 +2089,7 @@ final class FloaterModel: ObservableObject {
 }
 
 enum FloaterGeneration {
-    static let current = 2
+    static let current = 3
 
     static func roman(_ number: Int) -> String {
         guard number > 0 else { return "" }
