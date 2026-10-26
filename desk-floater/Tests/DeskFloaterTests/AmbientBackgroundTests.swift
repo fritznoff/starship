@@ -29,14 +29,16 @@ final class AmbientPreferenceTests: XCTestCase {
 }
 
 final class AmbientSpeechRippleTests: XCTestCase {
-    func testAmplitudeMapsToIncreasingBoundedImpulseStrength() throws {
+    func testAmplitudeMapsToDBStrengthWithClearSpreadAndNoNormalLevelClipping() throws {
         XCTAssertNil(AmbientSpeechRipple.strength(for: 0))
         XCTAssertNil(AmbientSpeechRipple.strength(for: AmbientSpeechRipple.minimumAmplitude))
         XCTAssertNil(AmbientSpeechRipple.strength(for: .nan))
-        let quiet = try XCTUnwrap(AmbientSpeechRipple.strength(for: 0.2))
-        let loud = try XCTUnwrap(AmbientSpeechRipple.strength(for: 0.9))
-        XCTAssertGreaterThan(loud, quiet)
-        XCTAssertEqual(AmbientSpeechRipple.strength(for: 1.5), AmbientSpeechRipple.strength(for: 1))
+        let strengths = try [0.2, 0.45, 0.7, 0.9].map { try XCTUnwrap(AmbientSpeechRipple.strength(for: $0)) }
+        XCTAssertTrue(zip(strengths, strengths.dropFirst()).allSatisfy { $0.0 < $0.1 })
+        let quiet = strengths[0], loud = strengths[3]
+        XCTAssertGreaterThan(loud - quiet, 0.5)
+        XCTAssertLessThan(loud, AmbientSpeechRipple.maximumStrength)
+        XCTAssertEqual(AmbientSpeechRipple.strength(for: 1.5), AmbientSpeechRipple.maximumStrength)
     }
 
     func testSpeechRipplesRequireRecordingMotionAndRespectTheRateLimit() throws {
@@ -314,8 +316,7 @@ final class AmbientBackgroundTests: XCTestCase {
 
         let gpu = try renderer()
         var speech = AmbientSpeechRipple()
-        let amplitudes = [0.12, 0.3, 0.75, 0.45, 0.2, 0.9, 0.15, 0.5,
-                          0.85, 0.25, 0.12, 0.65, 0.95, 0.4, 0.18, 0.7]
+        let amplitudes = [0.2, 0.2, 0.2, 0.8, 0.9, 0.8, 0.2, 0.9, 0.2, 0.8, 0.2, 0.9]
         let frames = try amplitudes.enumerated().map { index, amplitude -> CGImage in
             let strength = try XCTUnwrap(speech.nextStrength(amplitude: amplitude, recording: true,
                                                              reduceMotion: false, at: Double(index) * 0.14))
@@ -323,7 +324,7 @@ final class AmbientBackgroundTests: XCTestCase {
                                    impulses: [PoolImpulse(center: center, radius: 18, strength: strength)], duration: 0.14)
             return try composite(image, over: NSColor(calibratedRed: 0.06, green: 0.07, blue: 0.1, alpha: 1))
         }
-        try writeGIF(frames, to: directory.appendingPathComponent("speech-ripples.gif"))
+        try writeGIF(frames, to: directory.appendingPathComponent("speech-ripple-quiet-vs-loud.gif"))
     }
 
     private func composite(_ image: NSBitmapImageRep, over background: NSColor) throws -> CGImage {

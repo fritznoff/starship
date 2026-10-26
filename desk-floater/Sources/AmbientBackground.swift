@@ -30,6 +30,12 @@ enum AmbientSettings {
 struct AmbientSpeechRipple {
     static let minimumAmplitude = 0.08
     static let minimumInterval: TimeInterval = 0.12
+    static let minimumStrength: Float = 0.08
+    static let maximumStrength: Float = 1.0
+    // SpeechLevel maps -55...-10 dB to 0...1; keep ripple strength linear in dB.
+    private static let meterFloorDB = -55.0
+    private static let meterRangeDB = 45.0
+    private static let loudCeilingDB = -10.0
 
     private var lastImpulseAt: TimeInterval? = nil
 
@@ -37,9 +43,11 @@ struct AmbientSpeechRipple {
 
     static func strength(for amplitude: Double) -> Float? {
         guard amplitude.isFinite else { return nil }
-        let amplitude = min(1, max(0, amplitude))
-        guard amplitude > minimumAmplitude else { return nil }
-        return Float(0.2 + (amplitude - minimumAmplitude) / (1 - minimumAmplitude) * 2.4)
+        let decibels = meterFloorDB + min(1, max(0, amplitude)) * meterRangeDB
+        let floorDB = meterFloorDB + minimumAmplitude * meterRangeDB
+        guard decibels > floorDB else { return nil }
+        let normalizedDB = min(1, (decibels - floorDB) / (loudCeilingDB - floorDB))
+        return minimumStrength + Float(normalizedDB) * (maximumStrength - minimumStrength)
     }
 
     mutating func nextStrength(amplitude: Double, recording: Bool, reduceMotion: Bool, at time: TimeInterval) -> Float? {
