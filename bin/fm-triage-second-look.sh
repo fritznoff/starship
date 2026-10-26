@@ -68,7 +68,7 @@
 #   FM_TRIAGE_SECOND_LOOK_TIMEOUT           per-request bound in seconds (default 8)
 #   FM_TRIAGE_SECOND_LOOK_BOUND             hard bound on the whole call (default 20)
 #   FM_TRIAGE_SECOND_LOOK_ENDPOINT          API endpoint
-#   FM_TRIAGE_SECOND_LOOK_ENV_FILE          .env holding TYPESAFE_API_KEY
+#   FM_TRIAGE_SECOND_LOOK_ENV_FILE          .env holding provider credentials
 #   FM_TRIAGE_SECOND_LOOK_RESPONSE          test seam: a recorded response body,
 #                                           used instead of the network so the real
 #                                           request build and threshold rule still run
