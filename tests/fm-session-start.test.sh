@@ -231,6 +231,7 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  *"lstart="*) /bin/ps "$@"; exit $? ;;
   *"comm="*)
     if [ -z "${FM_FAKE_HARNESS_PID:-}" ] || [ "$pid" = "$FM_FAKE_HARNESS_PID" ] \
       || [ "$pid" = "${FM_FAKE_LIVE_HOLDER_PID:-}" ]; then
@@ -799,6 +800,63 @@ write_omp_loaded_markers() {
 
 # --- context digest: absent vs empty vs present -----------------------------
 
+test_primary_pane_publication() {
+  local rec root home fakebin out pid before case pane tmp
+  rec=$(new_world primary-pane)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  # Pin a real, stable test owner; only its process identity is real here.
+  out=$(TMUX='' TMUX_PANE=%42 HERDR_ENV='' HERDR_PANE_ID='' HERDR_SESSION='' HERDR_SOCKET_PATH='' FM_FAKE_HARNESS_PID=$$ \
+    PRIVATE_TEST_SECRET=never-record-this run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  pid=$(cat "$home/state/.lock")
+  jq -e --arg pid "$pid" '.schema == 1 and .pid == $pid and (.start | length > 0)
+    and .route.TMUX_PANE == "%42" and (.route | keys | all(. == "TMUX" or . == "TMUX_PANE"))' \
+    "$home/state/.primary-pane" >/dev/null || fail "verified startup did not publish route"
+  assert_not_contains "$(cat "$home/state/.primary-pane")" never-record-this "non-routing environment leaked"
+  python3 - "$home/state/.primary-pane" <<'PYCODE' || fail "route record must be private"
+import os, stat, sys
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600
+PYCODE
+  # An open reader retains the original complete record across replacement.
+  before=$(cat "$home/state/.primary-pane")
+  exec 3< "$home/state/.primary-pane"
+  # The guarded publisher is callable independently; no full startup or drain.
+  TMUX='/tmp/fm pane.sock,1,0' TMUX_PANE=%43 HERDR_ENV='' HERDR_PANE_ID='' HERDR_SESSION='' HERDR_SOCKET_PATH='' PATH="$fakebin:$BASE_PATH" FM_FAKE_HARNESS_PID=$$ \
+    bash -c '. "$1/bin/fm-supervisor-target-lib.sh"; fm_supervisor_publish_primary_pane "$2/state"' \
+    _ "$ROOT" "$home" || fail "owning tool child cannot refresh route"
+  jq -e '.route.TMUX_PANE == "%43"' "$home/state/.primary-pane" >/dev/null || fail "route replacement failed"
+  [ "$(cat <&3)" = "$before" ] || fail "route was overwritten in place instead of atomically replaced"
+  exec 3<&-
+  out=$(bash -c '. "$1/bin/fm-supervisor-target-lib.sh"; fm_supervisor_read_primary_pane "$2/state" "$3"' \
+    _ "$ROOT" "$home" "$pid") || fail "published route cannot be read"
+  assert_contains "$out" 'TMUX=/tmp/fm pane.sock,1,0' "socket paths with spaces must remain opaque data"
+  for tmp in "$home/state"/.primary-pane-*; do
+    [ ! -e "$tmp" ] || fail "temporary route left behind"
+  done
+  before=$(cat "$home/state/.primary-pane")
+  # An unrelated caller must not replace the same live owner's route.
+  TMUX_PANE=%44 PATH="$fakebin:$BASE_PATH" FM_FAKE_HARNESS_PID=99999999 \
+    bash -c '. "$1/bin/fm-supervisor-target-lib.sh"; fm_supervisor_publish_primary_pane "$2/state"' \
+    _ "$ROOT" "$home" && fail "foreign publisher accepted"
+  [ "$(cat "$home/state/.primary-pane")" = "$before" ] || fail "foreign publisher changed route"
+  for case in invalid symlink; do
+    pane=invalid-pane
+    if [ "$case" = symlink ]; then
+      mv "$home/state/.primary-pane" "$home/state/route-original"
+      ln -s route-original "$home/state/.primary-pane"
+      pane=%44
+    fi
+    TMUX_PANE="$pane" PATH="$fakebin:$BASE_PATH" FM_FAKE_HARNESS_PID=$$ \
+      bash -c '. "$1/bin/fm-supervisor-target-lib.sh"; fm_supervisor_publish_primary_pane "$2/state"' \
+      _ "$ROOT" "$home" && fail "$case publication accepted"
+    [ "$(cat "$home/state/.primary-pane")" = "$before" ] || fail "$case changed existing record"
+  done
+  pass "primary pane hints: verified startup and owning refresh publish privately; unsafe publication preserves old record"
+}
+
 test_context_digest_absent_empty_present() {
   local rec root home fakebin out
   rec=$(new_world context-digest)
@@ -928,12 +986,14 @@ EOF
   sleep 300 &
   holder_pid=$!
   printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  printf 'foreign route sentinel' > "$home/state/.primary-pane"
 
   status=0
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  out=$(TMUX_PANE=%55 run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 
+  [ "$(cat "$home/state/.primary-pane")" = "foreign route sentinel" ] || fail "refused startup changed route hint"
   expect_code 0 "$status" "fm-session-start.sh must exit 0 even on a lock refusal"
   assert_contains "$out" "READ-ONLY SESSION" "read-only banner missing on lock refusal"
   assert_contains "$out" "another live firstmate session holds the lock" "read-only banner did not surface fm-lock.sh's own error text"
@@ -3309,6 +3369,7 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_primary_pane_publication
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_session_start_refreshes_presentation_only_for_the_session_owner

@@ -27,7 +27,8 @@
 # was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
-#                       mutating step runs.
+#                       mutating step runs; best-effort owner-bound pane hint
+#                       publication follows verified acquisition.
 #   1b. home role    - the resolved firstmate-repository role line
 #                      (bin/fm-role.sh report), purely local, no network.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
@@ -741,6 +742,13 @@ FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-role.sh" report 
   || printf 'fm-role: unknown (bin/fm-role.sh report failed)\n'
 
 if [ "$READ_ONLY" -eq 0 ]; then
+  # Optional routing hint: only the verified owner may publish inherited keys.
+  # Failure cannot invalidate session startup or the durable voice mailbox.
+  (
+    # shellcheck source=bin/fm-supervisor-target-lib.sh
+    . "$SCRIPT_DIR/fm-supervisor-target-lib.sh"
+    fm_supervisor_publish_primary_pane "$STATE"
+  ) >/dev/null 2>&1 || true
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi

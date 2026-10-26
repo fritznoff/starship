@@ -1133,6 +1133,20 @@ An earlier `sleep 60` chained ahead of a status check was refused before executi
 The blocking foreground `until` loop is therefore the wait a Claude Code worker may use, and it is what the brief names, because the refusal's own `run_in_background` suggestion is the one shape a waiting worker must not take: a backgrounded call returns at once and so does not wait at all.
 The brief's portable regression is `tests/fm-brief.test.sh`; rerun these commands after upgrading any of the three harnesses and update the numbers in the brief when they move.
 
+## Desk floater owner-bound route recovery
+
+On 2026-10-26, portable regressions on macOS arm64 passed through the real publisher and desk-voice entry point with synthetic primary processes and simulated tmux and Herdr panes:
+
+```sh
+bash bin/fm-test-run.sh tests/fm-deepgram-desk.test.sh tests/fm-session-start.test.sh tests/fm-composer-lib.test.sh
+bash bin/fm-test-run.sh tests/fm-session-lock-ancestry.test.sh tests/fm-daemon.test.sh
+```
+
+The routing cases prove one submission without a mailbox duplicate from a primary with no process-visible routing environment, empty-only hint recovery, and refusal for stale owners, malformed or symlinked hints, foreign pane ancestry, wrong sockets and changed ownership before typing.
+Startup cases prove private owner-only publication and independent guarded refresh; existing classifier, Claude draft, Codex draft and supervisor-discovery cases remain unchanged.
+These are process/IO and simulated-endpoint regressions, not new live Pi submission evidence or a change to any vendor-rendered classifier.
+The direct route still supports only the tmux and Herdr root-PID proof in `bin/fm-desk-voice.sh`; other runtime backends retain mailbox fallback.
+
 ## Desk floater send past a draft
 
 `bin/fm-desk-voice.sh` sends a floater message past the captain's unsent draft in a Claude primary's chat box by stashing the draft with Ctrl+S, reading Claude's `› stashed` footer, and relying on Claude to restore the draft when the message is submitted.
