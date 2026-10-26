@@ -87,6 +87,7 @@ private struct ActivationSettingsView: View {
     @AppStorage(AmbientSettings.dampingKey) private var damping = AmbientSettings.damping
     @AppStorage(AmbientSettings.dotSizeKey) private var dotSize = AmbientSettings.dotSize
     @AppStorage(AmbientSettings.dotSpacingKey) private var dotSpacing = AmbientSettings.dotSpacing
+    @AppStorage(AmbientSettings.dotBrightnessKey) private var dotBrightness = AmbientSettings.dotBrightness
     let apply: (ActivationShortcut) -> Void
 
     private func ambientSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
@@ -127,6 +128,7 @@ private struct ActivationSettingsView: View {
             ambientSlider("Damping", value: $damping, range: AmbientSettings.dampingRange, step: 0.02)
             Text("Lower damping keeps reflections and interference alive longer.").font(.caption)
             ambientSlider("Dot size (pt)", value: $dotSize, range: AmbientSettings.dotSizeRange, step: 0.05)
+            ambientSlider("Dot brightness", value: $dotBrightness, range: AmbientSettings.dotBrightnessRange, step: 0.05)
             ambientSlider("Dot spacing (pt)", value: $dotSpacing, range: AmbientSettings.dotSpacingRange, step: 0.25)
             Button("Reset sliders") { AmbientSettings.resetSliders() }
         }

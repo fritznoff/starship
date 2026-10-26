@@ -1,5 +1,7 @@
 import AppKit
+import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 import XCTest
 @testable import DeskFloater
 final class AmbientPreferenceTests: XCTestCase {
@@ -11,15 +13,41 @@ final class AmbientPreferenceTests: XCTestCase {
         defaults.set(0.04, forKey: AmbientSettings.dampingKey)
         defaults.set(2.1, forKey: AmbientSettings.dotSizeKey)
         defaults.set(5.0, forKey: AmbientSettings.dotSpacingKey)
+        defaults.set(0.5, forKey: AmbientSettings.dotBrightnessKey)
         AmbientSettings.resetSliders(in: defaults)
         let reopened = try XCTUnwrap(UserDefaults(suiteName: suite))
         XCTAssertFalse(reopened.bool(forKey: AmbientSettings.defaultsKey))
         XCTAssertEqual(reopened.double(forKey: AmbientSettings.dampingKey), AmbientSettings.damping)
         XCTAssertEqual(reopened.double(forKey: AmbientSettings.dotSizeKey), AmbientSettings.dotSize)
         XCTAssertEqual(reopened.double(forKey: AmbientSettings.dotSpacingKey), AmbientSettings.dotSpacing)
+        XCTAssertEqual(reopened.double(forKey: AmbientSettings.dotBrightnessKey), AmbientSettings.dotBrightness)
         XCTAssertTrue(AmbientSettings.dampingRange.contains(AmbientSettings.damping))
         XCTAssertTrue(AmbientSettings.dotSizeRange.contains(AmbientSettings.dotSize))
         XCTAssertTrue(AmbientSettings.dotSpacingRange.contains(AmbientSettings.dotSpacing))
+        XCTAssertTrue(AmbientSettings.dotBrightnessRange.contains(AmbientSettings.dotBrightness))
+    }
+}
+
+final class AmbientSpeechRippleTests: XCTestCase {
+    func testAmplitudeMapsToIncreasingBoundedImpulseStrength() throws {
+        XCTAssertNil(AmbientSpeechRipple.strength(for: 0))
+        XCTAssertNil(AmbientSpeechRipple.strength(for: AmbientSpeechRipple.minimumAmplitude))
+        XCTAssertNil(AmbientSpeechRipple.strength(for: .nan))
+        let quiet = try XCTUnwrap(AmbientSpeechRipple.strength(for: 0.2))
+        let loud = try XCTUnwrap(AmbientSpeechRipple.strength(for: 0.9))
+        XCTAssertGreaterThan(loud, quiet)
+        XCTAssertEqual(AmbientSpeechRipple.strength(for: 1.5), AmbientSpeechRipple.strength(for: 1))
+    }
+
+    func testSpeechRipplesRequireRecordingMotionAndRespectTheRateLimit() throws {
+        var ripple = AmbientSpeechRipple()
+        XCTAssertNil(ripple.nextStrength(amplitude: 1, recording: false, reduceMotion: false, at: 1))
+        XCTAssertNil(ripple.nextStrength(amplitude: 1, recording: true, reduceMotion: true, at: 1))
+        XCTAssertNil(ripple.nextStrength(amplitude: 0.05, recording: true, reduceMotion: false, at: 1))
+        let quiet = try XCTUnwrap(ripple.nextStrength(amplitude: 0.2, recording: true, reduceMotion: false, at: 1))
+        XCTAssertNil(ripple.nextStrength(amplitude: 0.9, recording: true, reduceMotion: false, at: 1.1))
+        let loud = try XCTUnwrap(ripple.nextStrength(amplitude: 0.9, recording: true, reduceMotion: false, at: 1.13))
+        XCTAssertGreaterThan(loud, quiet)
     }
 }
 
@@ -29,7 +57,8 @@ import MetalKit
 
 private let defaultPoolConfiguration = AmbientConfiguration(damping: Float(AmbientSettings.damping),
                                                             dotSize: Float(AmbientSettings.dotSize),
-                                                            dotSpacing: Float(AmbientSettings.dotSpacing))
+                                                            dotSpacing: Float(AmbientSettings.dotSpacing),
+                                                            dotBrightness: Float(AmbientSettings.dotBrightness))
 
 @MainActor
 final class AmbientBackgroundTests: XCTestCase {
@@ -120,11 +149,16 @@ final class AmbientBackgroundTests: XCTestCase {
         let baseline = alpha(try render(gpu))
         let larger = AmbientConfiguration(damping: 0.12, dotSize: 2, dotSpacing: 2.5)
         let sparse = AmbientConfiguration(damping: 0.12, dotSize: 1.35, dotSpacing: 6)
+        let dim = AmbientConfiguration(damping: 0.12, dotSize: 1.35, dotSpacing: 2.5, dotBrightness: 0.4)
+        let bright = AmbientConfiguration(damping: 0.12, dotSize: 1.35, dotSpacing: 2.5, dotBrightness: 1.8)
         XCTAssertGreaterThan(alpha(try render(gpu, configuration: larger)), baseline*3/2)
         XCTAssertLessThan(alpha(try render(gpu, configuration: sparse)), baseline/2)
-        let invalid = AmbientConfiguration(damping: .nan, dotSize: .infinity, dotSpacing: -10)
-        XCTAssertTrue(invalid.damping.isFinite && invalid.dotSize.isFinite)
+        XCTAssertLessThan(alpha(try render(gpu, configuration: dim)), baseline/2)
+        XCTAssertGreaterThan(alpha(try render(gpu, configuration: bright)), baseline*3/2)
+        let invalid = AmbientConfiguration(damping: .nan, dotSize: .infinity, dotSpacing: -10, dotBrightness: .infinity)
+        XCTAssertTrue(invalid.damping.isFinite && invalid.dotSize.isFinite && invalid.dotBrightness.isFinite)
         XCTAssertGreaterThanOrEqual(invalid.dotSpacing, 1)
+        XCTAssertGreaterThanOrEqual(invalid.dotBrightness, 0.2)
     }
 
     func testGPUPointRenderingCoversThePlateAndRefractsInsteadOfKeepingAFlatPalette() throws {
@@ -233,11 +267,13 @@ final class AmbientBackgroundTests: XCTestCase {
         defaults.set(0.04, forKey: AmbientSettings.dampingKey)
         defaults.set(1.8, forKey: AmbientSettings.dotSizeKey)
         defaults.set(4.0, forKey: AmbientSettings.dotSpacingKey)
+        defaults.set(0.65, forKey: AmbientSettings.dotBrightnessKey)
         pump(0.2)
         let tuned = try XCTUnwrap(findPool(host))
         XCTAssertTrue(tuned === pool, "tuning must not recreate the simulation or erase its waves")
         XCTAssertEqual(tuned.configuration.damping, 0.04)
         XCTAssertEqual(tuned.configuration.dotSize, 1.8)
+        XCTAssertEqual(tuned.configuration.dotBrightness, 0.65)
         XCTAssertEqual(tuned.parameters.renderGrid, SIMD2<UInt32>(19, 17))
         XCTAssertNotEqual(tuned.parameters.renderGrid, originalGrid)
         XCTAssertTrue(tuned.isAnimating)
@@ -250,10 +286,68 @@ final class AmbientBackgroundTests: XCTestCase {
         defaults.set(true, forKey: AmbientSettings.defaultsKey)
         model.mode = .idle; pump(0.2)
         XCTAssertNotNil(findPool(host))
-        host.rootView = AnyView(AmbientHost(active: true, center: CGPoint(x: 24, y: 42), reduceMotion: true, configuration: defaultPoolConfiguration))
+        host.rootView = AnyView(AmbientHost(active: true, recording: false, amplitude: 0,
+                                            center: CGPoint(x: 24, y: 42), reduceMotion: true,
+                                            configuration: defaultPoolConfiguration))
         pump(0.2)
         XCTAssertFalse(try XCTUnwrap(findPool(host)).isAnimating)
         XCTAssertTrue(state(try XCTUnwrap(findPool(host)).gpu).allSatisfy { $0 == .zero })
+    }
+
+    func testCapturePoolLightDarkAndSyntheticSpeechGIFWhenRequested() throws {
+        guard let output = ProcessInfo.processInfo.environment["FM_FLOATER_CAPTURE_DIR"] else {
+            throw XCTSkip("Set FM_FLOATER_CAPTURE_DIR to capture the test pool")
+        }
+        let directory = URL(fileURLWithPath: output, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let center = SIMD2<Float>(37, 33)
+        let backgrounds: [(String, Float, NSColor)] = [
+            ("light", 0, .white), ("dark", 1, NSColor(calibratedRed: 0.06, green: 0.07, blue: 0.1, alpha: 1))
+        ]
+        for (name, dark, background) in backgrounds {
+            let gpu = try renderer()
+            _ = try render(gpu, dark: dark, impulses: [PoolImpulse(center: center, radius: 18, strength: 2.6)], duration: 0.12)
+            for _ in 0..<8 { _ = try render(gpu, dark: dark, duration: 0.12) }
+            let image = try render(gpu, dark: dark)
+            try writePNG(try composite(image, over: background), to: directory.appendingPathComponent("pool-\(name).png"))
+        }
+
+        let gpu = try renderer()
+        var speech = AmbientSpeechRipple()
+        let amplitudes = [0.12, 0.3, 0.75, 0.45, 0.2, 0.9, 0.15, 0.5,
+                          0.85, 0.25, 0.12, 0.65, 0.95, 0.4, 0.18, 0.7]
+        let frames = try amplitudes.enumerated().map { index, amplitude -> CGImage in
+            let strength = try XCTUnwrap(speech.nextStrength(amplitude: amplitude, recording: true,
+                                                             reduceMotion: false, at: Double(index) * 0.14))
+            let image = try render(gpu, dark: 1,
+                                   impulses: [PoolImpulse(center: center, radius: 18, strength: strength)], duration: 0.14)
+            return try composite(image, over: NSColor(calibratedRed: 0.06, green: 0.07, blue: 0.1, alpha: 1))
+        }
+        try writeGIF(frames, to: directory.appendingPathComponent("speech-ripples.gif"))
+    }
+
+    private func composite(_ image: NSBitmapImageRep, over background: NSColor) throws -> CGImage {
+        let context = try XCTUnwrap(CGContext(data: nil, width: image.pixelsWide, height: image.pixelsHigh,
+                                              bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(background.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: image.pixelsWide, height: image.pixelsHigh))
+        context.draw(try XCTUnwrap(image.cgImage), in: CGRect(x: 0, y: 0, width: image.pixelsWide, height: image.pixelsHigh))
+        return try XCTUnwrap(context.makeImage())
+    }
+
+    private func writePNG(_ image: CGImage, to url: URL) throws {
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+    }
+
+    private func writeGIF(_ images: [CGImage], to url: URL) throws {
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, images.count, nil))
+        let properties: [CFString: Any] = [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.14]]
+        for image in images { CGImageDestinationAddImage(destination, image, properties as CFDictionary) }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
     }
 
     private func visiblePool() throws -> (NSWindow, WavePoolView) {
@@ -284,7 +378,8 @@ final class AmbientBackgroundTests: XCTestCase {
         }
     }
 
-    private func render(_ gpu: WaveGPU, configuration: AmbientConfiguration = defaultPoolConfiguration) throws -> NSBitmapImageRep {
+    private func render(_ gpu: WaveGPU, configuration: AmbientConfiguration = defaultPoolConfiguration,
+                        dark: Float = 1, impulses: [PoolImpulse] = [], duration: Float? = nil) throws -> NSBitmapImageRep {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 148, height: 132, mipmapped: false)
         descriptor.storageMode = .shared; descriptor.usage = .renderTarget
         let texture = try XCTUnwrap(gpu.device.makeTexture(descriptor: descriptor))
@@ -293,7 +388,9 @@ final class AmbientBackgroundTests: XCTestCase {
         pass.colorAttachments[0].loadAction = .clear; pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         let command = try XCTUnwrap(gpu.queue.makeCommandBuffer())
-        gpu.encodeRender(command, pass: pass, parameters: PoolParameters(visibleSize: SIMD2(74, 66), configuration: configuration), scale: 2)
+        let parameters = PoolParameters(visibleSize: SIMD2(74, 66), configuration: configuration, dark: dark)
+        if let duration { gpu.encodeStep(command, parameters: parameters, impulses: impulses, duration: duration) }
+        gpu.encodeRender(command, pass: pass, parameters: parameters, scale: 2)
         command.commit(); command.waitUntilCompleted()
         XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 148, pixelsHigh: 132, bitsPerSample: 8,

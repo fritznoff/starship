@@ -137,10 +137,10 @@ Close the window to use the new shortcut.
 
 The same settings window has an **Animated background** switch, on by default and saved for each app channel.
 Switching it off removes the optional Metal module entirely, leaving a plain plate with no background computation.
-When enabled, a calm lattice fills the plate; starting talk or dictation pushes a ripple from the round button, and pointer movement stirs the pool in proportion to speed.
+When enabled, a calm lattice fills the plate; starting talk or dictation pushes a ripple from the round button, live speech adds rate-limited ripples scaled to the microphone level, and pointer movement stirs the pool in proportion to speed.
 The visible plate looks into the centre of a larger pool: waves leave the view, reflect from unseen walls and corners, return as interference, and gradually settle.
 Drawing stops when calm or out of sight.
-The live, saved **Damping**, **Dot size**, and **Dot spacing** sliders control persistence and the lattice; lower damping keeps waves alive longer.
+The live, saved **Damping**, **Dot size**, **Dot brightness**, and **Dot spacing** sliders control persistence and the lattice; lower damping keeps waves alive longer.
 **Reset sliders** restores their defaults without switching a disabled animation back on.
 Reduce Motion keeps a static lattice; Reduce Transparency removes it and makes the plate opaque.
 If Metal is unavailable, the controls still work over a plain plate.

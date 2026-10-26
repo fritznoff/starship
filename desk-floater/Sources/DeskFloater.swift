@@ -2290,6 +2290,7 @@ struct FloaterView: View {
                         GeometryReader { proxy in
                             let rowHeight = model.voiceOutAvailable ? max(mainSize, controlSize * 2 + controlSpacing) : mainSize
                             AmbientBackground(active: model.mode == .starting || model.mode == .recording,
+                                              recording: model.mode == .recording, amplitude: model.microphoneLevel,
                                               center: CGPoint(x: proxy.size.width - 6 - rowWidth + mainSize / 2,
                                                               y: proxy.size.height - 6 - rowHeight / 2))
                         }

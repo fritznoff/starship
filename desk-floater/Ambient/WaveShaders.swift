@@ -4,7 +4,7 @@ enum WaveShaders {
     using namespace metal;
     struct Parameters {
         uint2 grid; float2 size; float2 visibleSize; uint2 renderGrid;
-        float dt; float damping; uint count; float dark; float dotSize; float dotSpacing;
+        float dt; float damping; uint count; float dark; float dotSize; float dotSpacing; float dotBrightness;
     };
     struct Impulse { float2 center; float radius; float strength; };
     uint indexAt(int x, int y, uint2 grid) {
@@ -79,8 +79,8 @@ enum WaveShaders {
         float2 slope = float2(heightAt(position+float2(cell.x,0),state,p)-heightAt(position-float2(cell.x,0),state,p),
                              heightAt(position+float2(0,cell.y),state,p)-heightAt(position-float2(0,cell.y),state,p))/(2*cell);
         float refraction = dot(slope, float2(-0.85f,0.3f));
-        float brightness = (0.18f + min(length(slope)*2.2f,0.32f) + min(abs(h)*0.08f,0.08f))
-                         * mix(0.85f,1.0f,p.dark);
+        float brightness = clamp((0.18f + min(length(slope)*2.2f,0.32f) + min(abs(h)*0.08f,0.08f))
+                         * mix(0.85f,1.0f,p.dark) * p.dotBrightness, 0.0f, 1.0f);
         Point out;
         out.position = float4(uv*2-1,0,1);
         out.size = (p.dotSize+min(abs(h)*0.6f,0.65f))*scale;

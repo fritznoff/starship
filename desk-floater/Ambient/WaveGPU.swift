@@ -5,11 +5,13 @@ public struct AmbientConfiguration: Equatable {
     public let damping: Float
     public let dotSize: Float
     public let dotSpacing: Float
+    public let dotBrightness: Float
 
-    public init(damping: Float, dotSize: Float, dotSpacing: Float) {
+    public init(damping: Float, dotSize: Float, dotSpacing: Float, dotBrightness: Float = 1) {
         self.damping = damping.isFinite ? min(2, max(0.01, damping)) : 1
         self.dotSize = dotSize.isFinite ? min(4, max(0.4, dotSize)) : 1
         self.dotSpacing = dotSpacing.isFinite ? min(10, max(1, dotSpacing)) : 3
+        self.dotBrightness = dotBrightness.isFinite ? min(2, max(0.2, dotBrightness)) : 1
     }
 }
 
@@ -40,6 +42,7 @@ struct PoolParameters {
     var dark: Float
     var dotSize: Float
     var dotSpacing: Float
+    var dotBrightness: Float
 
     init(visibleSize: SIMD2<Float>, configuration: AmbientConfiguration, domainScale: Float = 2.5,
          grid: SIMD2<UInt32> = SIMD2(80, 70), dark: Float = 1) {
@@ -48,7 +51,8 @@ struct PoolParameters {
         size = self.visibleSize * domainScale
         renderGrid = SIMD2(UInt32(ceil(self.visibleSize.x / configuration.dotSpacing)),
                            UInt32(ceil(self.visibleSize.y / configuration.dotSpacing)))
-        damping = configuration.damping; dotSize = configuration.dotSize; dotSpacing = configuration.dotSpacing; self.dark = dark
+        damping = configuration.damping; dotSize = configuration.dotSize; dotSpacing = configuration.dotSpacing
+        dotBrightness = configuration.dotBrightness; self.dark = dark
     }
 }
 
