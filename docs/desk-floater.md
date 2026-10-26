@@ -4,6 +4,14 @@ A Mac-native always-on-top push-to-talk control for **this** Firstmate home.
 It recreates the *feel* of a floating desk mic without depending on the
 ChatGPT/Codex desktop app.
 
+> **On this fork, the maintained Mac app lives in its own repository:**
+> [happinesscompass/starship-floater](https://github.com/happinesscompass/starship-floater) (private).
+> Install it with Homebrew from the private
+> [happinesscompass/homebrew-tap](https://github.com/happinesscompass/homebrew-tap);
+> that tap's README has the from-scratch setup (GitHub CLI login, tap, install,
+> pointing the app at this Starship checkout, permissions).
+> The `desk-floater/` sources and the build steps below are the upstream Firstmate copy, kept for upstream compatibility.
+
 On Windows, where Starship runs inside WSL 2, the [Windows desk floater](desk-floater-windows.md) does the same through the same delivery scripts.
 
 The floater is mouth and ears only, plus a dictation keyboard you drive yourself.
