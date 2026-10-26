@@ -24,7 +24,7 @@ RULES="$HOME_DIR/config/crew-dispatch.json"
 QUOTA="$TMP_ROOT/quota.json"
 BASE_PATH=$PATH
 mkdir -p "$HOME_DIR/config" "$LOG" "$NO_CURL_BIN"
-for command_name in bash chmod cp dirname jq mktemp rm; do
+for command_name in bash chmod cp dirname jq mktemp rm python3; do
   ln -s "$(command -v "$command_name")" "$NO_CURL_BIN/$command_name"
 done
 
@@ -115,15 +115,16 @@ if [ -n "${TYPESAFE_API_KEY+x}" ] || [ -n "${TYPESAFE_API_KEY_PRIVATE+x}" ]; the
 else
   printf 'curl:clean\n' >> "${CHILD_ENV_LOG:?}"
 fi
-out=''
+out='' header=''
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift 2 ;;
+    -H) case "$2" in @/dev/fd/*) header=${2#@} ;; esac; printf '%s\n%s\n' "$1" "$2" >> "${FAKE_CURL_LOG:?}/argv"; shift 2 ;;
     *) printf '%s\n' "$1" >> "${FAKE_CURL_LOG:?}/argv"; shift ;;
   esac
 done
 cat > "$FAKE_CURL_LOG/body"
-cat /dev/fd/3 > "$FAKE_CURL_LOG/header" 2>/dev/null || printf 'fd3 unreadable\n' > "$FAKE_CURL_LOG/header"
+cat "$header" > "$FAKE_CURL_LOG/header" 2>/dev/null || printf 'fd3 unreadable\n' > "$FAKE_CURL_LOG/header"
 if [ -n "${FAKE_CURL_MUTATE_SOURCE:-}" ]; then
   cp "$FAKE_CURL_MUTATE_SOURCE" "${FAKE_CURL_MUTATE_TARGET:?}"
 fi
@@ -1147,5 +1148,28 @@ run code out err --help
 expect_code 0 "$code" "--help exits 0"
 assert_contains "$out" 'Usage:' "--help prints usage"
 pass "configuration errors exit 2 before any network call"
+
+# Alternate provider: no TypeSafe credential required; no thresholds means no profile.
+mkdir -p "$HOME_DIR/state"
+reset_log
+cp "$BASE_RULES" "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+printf '%s\n' '{"provider":"workers-ai"}' > "$HOME_DIR/config/decision-model.json"
+jq '{success:true,result:.}' "$RESPONSE" > "$TMP_ROOT/envelope.json"
+cp "$TMP_ROOT/envelope.json" "$RESPONSE"
+CLOUDFLARE_API_KEY=cf-fixture CLOUDFLARE_ACCOUNT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "uncalibrated dispatch only advises"
+assert_not_contains "$out" '  profile:' "uncalibrated model cannot dispatch"
+assert_contains "$(cat "$LOG/header")" 'Bearer cf-fixture' "Cloudflare uses its own key"
+assert_contains "$(cat "$LOG/argv")" '/ai/run/@cf/cloudflare/clef-flash' "Cloudflare uses its own origin and route"
+assert_contains "$(cat "$HOME_DIR/state/decision-model-scores.jsonl")" '"advisory": true' "advisory scores are recorded"
+printf '%s\n' '{"provider":"workers-ai","providers":{"workers-ai":{"thresholds":{"clef-flash":{"dispatch":{"confidence":0.95,"scope":0.75}}}}}}' > "$HOME_DIR/config/decision-model.json"
+CLOUDFLARE_API_KEY=cf-fixture CLOUDFLARE_ACCOUNT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run code out err "$BRIEF"
+assert_contains "$out" '  status: ambiguous' "the configured confidence floor is used, not Jev's 0.6"
+printf '%s\n' '{"provider":"workers-ai","providers":{"workers-ai":{"thresholds":{"clef-flash":{"dispatch":{"confidence":0.8,"scope":0.75}}}}}}' > "$HOME_DIR/config/decision-model.json"
+CLOUDFLARE_API_KEY=cf-fixture CLOUDFLARE_ACCOUNT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "explicit thresholds authorize normal dispatch"
+rm "$HOME_DIR/config/decision-model.json"
+pass "alternate dispatch collects advisory scores until model-specific thresholds are set"
 
 printf '# all fm-dispatch-resolve tests passed\n'
