@@ -16,6 +16,7 @@ TMP_ROOT=$(fm_test_tmproot fm-deepgram-desk)
 # Ambient captain keys must not leak into these fixtures.
 unset DEEPGRAM_API_KEY DEEPGRAM_STT_MODEL DEEPGRAM_TTS_MODEL || true
 unset FM_DEEPGRAM_DEFAULT_STT_MODEL FM_DEEPGRAM_DEFAULT_TTS_MODEL || true
+unset FM_STT_SHADOW FM_STT_PROVIDER FM_STT_SOURCE FM_STT_LOCAL_CURL || true
 export FM_DEEPGRAM_ENV_FILE=/dev/null
 # A mailbox delivery rings the primary in the background; cases that test the
 # ring turn it back on with their own short schedule.
@@ -637,6 +638,306 @@ test_stt_reads_the_model_from_dotenv() {
     || fail "stt failed: $out"
   case "$(cat "$home/curl.log")" in *'model=nova-3&'*) ;; *) fail "absent .env model must use the default" ;; esac
   pass "fm-deepgram-stt: model and hints follow environment, home .env, then default"
+}
+
+# --- local engine and shadow comparison --------------------------------------
+
+DG_BODY='{"results":{"channels":[{"alternatives":[{"transcript":"deepgram heard this"}]}]}}'
+
+# A stand-in for the local engine's curl: answers {"text": <text>} and logs
+# argv, or exits <rc> when given, after sleeping FM_TEST_LOCAL_DELAY seconds.
+install_local_curl() {  # <home> <text> [rc]
+  local home=$1 text=$2 rc=${3:-0}
+  cat > "$home/local-curl" <<EOF
+#!/usr/bin/env bash
+out=
+prev=
+for a in "\$@"; do
+  [ "\$prev" != -o ] || out=\$a
+  prev=\$a
+done
+printf 'local-argv: %s\n' "\$*" >> "$home/local-curl.log"
+sleep "\${FM_TEST_LOCAL_DELAY:-0}"
+[ "$rc" -eq 0 ] || exit "$rc"
+printf '{"text": "%s"}' "$text" > "\$out"
+printf 200
+EOF
+  chmod +x "$home/local-curl"
+}
+
+# Stand-ins for quota-axi and the two judge CLIs, on PATH inside <home>/bin.
+# A judge named in <home>/judge-fails exits 1; otherwise it picks the transcript
+# containing "local", regardless of the random order in the prompt.
+install_judges() {  # <home> [codex-first]
+  local home=$1 claude_prio=1 codex_prio=-1 name
+  [ -z "${2:-}" ] || { claude_prio=-1; codex_prio=1; }
+  mkdir -p "$home/bin"
+  cat > "$home/bin/quota-axi" <<EOF
+#!/bin/sh
+printf '{"providers":[{"provider":"claude","quotaSemantics":{"effectiveAvailability":[{"scope":"all_models","runway":{"status":"ok"},"selection":{"spendPriority":$claude_prio}}]}},{"provider":"codex","quotaSemantics":{"effectiveAvailability":[{"scope":"all_models","runway":{"status":"ok"},"selection":{"spendPriority":$codex_prio}}]}}]}'
+EOF
+  for name in claude pi; do
+    cat > "$home/bin/$name" <<EOF
+#!/usr/bin/env bash
+printf '%s %s\n' "$name" "\$*" >> "$home/judge.log"
+! grep -qx "$name" "$home/judge-fails" 2>/dev/null || exit 1
+for last in "\$@"; do :; done
+case "\$last" in
+  *"Transcript A:"*local*"Transcript B:"*) printf '{"winner": "A", "reason": "fewer slips"}\n' ;;
+  *) printf '{"winner": "B", "reason": "fewer slips"}\n' ;;
+esac
+EOF
+  done
+  chmod +x "$home/bin/"*
+}
+
+# Wait up to 20 seconds for the experiment CSV to hold <rows> data rows.
+wait_for_rows() {  # <home> <rows>
+  local csv=$1/data/stt-experiment/results.csv _
+  for _ in $(seq 1 100); do
+    [ -f "$csv" ] && [ "$(( $(wc -l < "$csv") - 1 ))" -ge "$2" ] && return 0
+    sleep 0.2
+  done
+  fail "no shadow row after 20 seconds: $(cat "$1/data/stt-experiment/shadow.log" 2>/dev/null)"
+}
+
+# Run the helper with mocked Deepgram and local engine in <home>.
+stt_mocked() {  # <home> [args...]
+  local home=$1
+  shift
+  DEEPGRAM_API_KEY=test-key-not-real FM_DEEPGRAM_CURL="$home/curl" \
+    FM_STT_LOCAL_CURL="$home/local-curl" PATH="$home/bin:$PATH" \
+    FM_HOME="$home" "$STT" "$@"
+}
+
+test_stt_local_primary_uses_the_local_engine() {
+  local home out log status=0
+  home=$(new_home stt-local)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'primary = local\n' > "$home/config/stt"
+  printf 'pat dot example 1 => pat.example1\n' > "$home/config/stt-vocabulary"
+  install_local_curl "$home" "Mail pat dot example 1 today."
+  out=$(env -u DEEPGRAM_API_KEY FM_STT_LOCAL_CURL="$home/local-curl" FM_HOME="$home" \
+    "$STT" "$home/clip.wav" 2>&1) || fail "local stt failed: $out"
+  [ "$out" = "Mail pat.example1 today." ] || fail "local transcript must get the vocabulary rewrites: $out"
+  log=$(cat "$home/local-curl.log")
+  assert_contains "$log" "http://127.0.0.1:8765/v1/audio/transcriptions" "default local URL"
+  assert_contains "$log" "model=mlx-community/parakeet-tdt-0.6b-v3" "default local model"
+  assert_contains "$log" "response_format=json" "OpenAI-shaped JSON answer"
+  out=$(env -u DEEPGRAM_API_KEY FM_STT_LOCAL_CURL="$home/local-curl" FM_HOME="$home" \
+    "$STT" --json "$home/clip.wav" 2>&1) || fail "local stt --json failed: $out"
+  [ "$out" = '{"text": "Mail pat dot example 1 today."}' ] || fail "--json must be the raw local answer: $out"
+  printf 'primary = local\nlocal_url = http://127.0.0.1:9/x\nlocal_model = whisper-test\n' > "$home/config/stt"
+  : > "$home/local-curl.log"
+  FM_STT_LOCAL_CURL="$home/local-curl" FM_HOME="$home" "$STT" "$home/clip.wav" >/dev/null 2>&1 \
+    || fail "configured local engine failed"
+  log=$(cat "$home/local-curl.log")
+  assert_contains "$log" "--url http://127.0.0.1:9/x" "configured local URL"
+  assert_contains "$log" "model=whisper-test" "configured local model"
+  install_local_curl "$home" "" 7
+  out=$(FM_STT_LOCAL_CURL="$home/local-curl" FM_HOME="$home" "$STT" "$home/clip.wav" 2>&1) || status=$?
+  [ "$status" -eq 1 ] || fail "a stopped local engine must exit 1, got $status: $out"
+  assert_contains "$out" "not reachable" "a stopped engine is named"
+  printf 'primary = whisper\n' > "$home/config/stt"
+  status=0
+  out=$(FM_HOME="$home" "$STT" "$home/clip.wav" 2>&1) || status=$?
+  [ "$status" -eq 2 ] || fail "an unknown provider must exit 2, got $status: $out"
+  pass "fm-deepgram-stt: primary = local transcribes through the local engine, rewrites applied"
+}
+
+test_stt_shadow_is_off_by_default() {
+  local home out
+  home=$(new_home stt-shadow-off)
+  printf 'RIFF' > "$home/clip.wav"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "local heard this"
+  out=$(stt_mocked "$home" "$home/clip.wav" 2>&1) || fail "stt failed: $out"
+  [ "$out" = "deepgram heard this" ] || fail "unexpected transcript: $out"
+  [ ! -e "$home/data/stt-experiment" ] || fail "no experiment data without shadow = true"
+  [ ! -e "$home/local-curl.log" ] || fail "the local engine must not be called without shadow = true"
+  pass "fm-deepgram-stt: without shadow = true nothing is recorded and the local engine is untouched"
+}
+
+test_stt_shadow_records_a_judged_row_without_delaying_the_caller() {
+  local home out start elapsed row sample
+  home=$(new_home stt-shadow)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'shadow = true\n' > "$home/config/stt"
+  printf 'Quillan\n' > "$home/config/stt-vocabulary"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "local heard this"
+  install_judges "$home"
+  start=$SECONDS
+  out=$(FM_TEST_LOCAL_DELAY=4 FM_STT_SOURCE=test-caller stt_mocked "$home" "$home/clip.wav") \
+    || fail "stt failed: $out"
+  elapsed=$(( SECONDS - start ))
+  [ "$out" = "deepgram heard this" ] || fail "the primary transcript must be unchanged: $out"
+  [ "$elapsed" -lt 3 ] || fail "the caller waited ${elapsed}s for the shadow run"
+  rm -f "$home/clip.wav"
+  wait_for_rows "$home" 1
+  row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+  assert_contains "$(head -n 1 "$home/data/stt-experiment/results.csv")" \
+    "timestamp,source,audio_seconds,primary,deepgram_ms,local_ms,deepgram_status,local_status,winner,reason,judge_model,sample" "CSV header"
+  assert_contains "$row" ",test-caller," "the caller is named"
+  assert_contains "$row" ",deepgram," "the primary is named"
+  assert_contains "$row" ",ok,ok,local,fewer slips,claude-haiku-5-5,samples/" "the judged winner is unblinded"
+  sample=$home/data/stt-experiment/${row##*,}
+  [ -f "$sample/audio.wav" ] || fail "the audio is kept even after the caller deletes its copy"
+  [ "$(cat "$sample/local.txt")" = "local heard this" ] || fail "local transcript kept"
+  [ "$(cat "$sample/deepgram.txt")" = "deepgram heard this" ] || fail "deepgram transcript kept"
+  assert_contains "$(cat "$home/judge.log")" "Quillan" "the vocabulary reaches the judge"
+  assert_contains "$(cat "$home/judge.log")" "--model claude-haiku-5-5 --effort medium" "Haiku with medium effort"
+  pass "fm-deepgram-stt: shadow = true returns at once and records one judged CSV row with the sample"
+}
+
+test_stt_shadow_judge_follows_quota_and_falls_back() {
+  local home row
+  home=$(new_home stt-shadow-judge)
+  printf 'shadow = true\n' > "$home/config/stt"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "local heard this"
+  install_judges "$home" codex-first
+  printf 'RIFF' > "$home/clip.wav"
+  stt_mocked "$home" "$home/clip.wav" >/dev/null || fail "stt failed"
+  wait_for_rows "$home" 1
+  row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+  assert_contains "$row" ",local,fewer slips,openai-codex/gpt-6-luna," "Luna judges when codex ranks first"
+  assert_contains "$(cat "$home/judge.log")" "pi -p --model openai-codex/gpt-6-luna --thinking xhigh" "Luna with extra-high thinking by default"
+  printf 'shadow = true\njudge_effort_haiku = low\n' > "$home/config/stt"
+  printf 'pi\n' > "$home/judge-fails"
+  stt_mocked "$home" "$home/clip.wav" >/dev/null || fail "stt failed"
+  wait_for_rows "$home" 2
+  row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+  assert_contains "$row" ",local,fewer slips,claude-haiku-5-5," "a failed judge falls back to the other"
+  assert_contains "$(cat "$home/judge.log")" "--model claude-haiku-5-5 --effort low" "the configured Haiku effort is used"
+  printf 'pi\nclaude\n' > "$home/judge-fails"
+  stt_mocked "$home" "$home/clip.wav" >/dev/null || fail "stt failed"
+  wait_for_rows "$home" 3
+  assert_contains "$(tail -n 1 "$home/data/stt-experiment/results.csv")" ",ok,ok,none,judge failed,," "no judge, no winner"
+  pass "fm-stt-shadow: the judge with usage left goes first and a failed call falls back"
+}
+
+# Exercise only paths that cannot reach launchctl or change a login agent.
+test_stt_local_server_usage_and_missing_agent() {
+  local home out status=0
+  home=$(new_home stt-local-server)
+  out=$(HOME="$home" "$ROOT/bin/fm-stt-local-server.sh" --help 2>&1) || fail "--help should exit 0: $out"
+  assert_contains "$out" "127.0.0.1" "help names the loopback-only listener"
+  out=$(HOME="$home" "$ROOT/bin/fm-stt-local-server.sh" bogus 2>&1) || status=$?
+  [ "$status" -eq 2 ] || fail "an unknown command must exit 2, got $status"
+  status=0
+  out=$(HOME="$home" "$ROOT/bin/fm-stt-local-server.sh" start 2>&1) || status=$?
+  [ "$status" -eq 2 ] || fail "start without an installed agent must exit 2, got $status: $out"
+  assert_contains "$out" "not installed" "a missing agent is named"
+  pass "fm-stt-local-server: usage is checked and start refuses without an installed agent"
+}
+
+test_stt_shadow_records_a_stopped_local_engine() {
+  local home out row
+  home=$(new_home stt-shadow-down)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'shadow = true\n' > "$home/config/stt"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "" 7
+  install_judges "$home"
+  out=$(stt_mocked "$home" "$home/clip.wav") || fail "stt must succeed with the local engine stopped: $out"
+  [ "$out" = "deepgram heard this" ] || fail "unexpected transcript: $out"
+  wait_for_rows "$home" 1
+  row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+  assert_contains "$row" ",ok,down,none,local down,," "a stopped engine is recorded"
+  [ ! -e "$home/judge.log" ] || fail "no judge call without two transcripts"
+  pass "fm-stt-shadow: a stopped local engine is recorded as down and the caller is unaffected"
+}
+
+test_stt_shadow_override_true_beats_config() {
+  local mode home out start elapsed row sample
+  for mode in absent false; do
+    home=$(new_home "stt-shadow-true-$mode")
+    printf 'RIFF' > "$home/clip.wav"
+    [ "$mode" != false ] || printf 'shadow = false\n' > "$home/config/stt"
+    install_stt_curl "$home" 200 "$DG_BODY"
+    install_local_curl "$home" "local heard this"
+    install_judges "$home"
+    start=$SECONDS
+    out=$(FM_TEST_LOCAL_DELAY=4 FM_STT_SHADOW=true stt_mocked "$home" "$home/clip.wav") \
+      || fail "stt failed with FM_STT_SHADOW=true: $out"
+    elapsed=$(( SECONDS - start ))
+    [ "$out" = "deepgram heard this" ] || fail "the primary transcript changed: $out"
+    [ "$elapsed" -lt 3 ] || fail "the foreground waited ${elapsed}s for comparison"
+    rm -f "$home/clip.wav"
+    wait_for_rows "$home" 1
+    row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+    sample=$home/data/stt-experiment/${row##*,}
+    [ -f "$sample/audio.wav" ] || fail "comparison lost the audio after the caller removed its copy"
+  done
+  pass "fm-deepgram-stt: explicit true enables comparison over absent and false config without waiting"
+}
+
+test_stt_shadow_override_false_beats_config() {
+  local home out
+  home=$(new_home stt-shadow-false-override)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'shadow = true\n' > "$home/config/stt"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "local heard this"
+  out=$(FM_STT_SHADOW=false stt_mocked "$home" "$home/clip.wav" 2>&1) \
+    || fail "stt failed with FM_STT_SHADOW=false: $out"
+  [ "$out" = "deepgram heard this" ] || fail "the primary transcript changed: $out"
+  [ ! -e "$home/data/stt-experiment" ] || fail "explicit false must suppress configured comparison"
+  [ ! -e "$home/local-curl.log" ] || fail "the local engine ran despite explicit false"
+  pass "fm-deepgram-stt: explicit false suppresses config/stt shadow=true"
+}
+
+test_stt_shadow_invalid_override_is_diagnostic_only() {
+  local home status=0
+  home=$(new_home stt-shadow-invalid)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'shadow = true\n' > "$home/config/stt"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  FM_STT_SHADOW=invalid-value stt_mocked "$home" "$home/clip.wav" > "$home/stdout" 2> "$home/stderr" || status=$?
+  [ "$status" -eq 0 ] || fail "invalid override changed the primary exit status: $status"
+  [ "$(cat "$home/stdout")" = "deepgram heard this" ] || fail "invalid override changed the primary transcript"
+  assert_contains "$(cat "$home/stderr")" "FM_STT_SHADOW must be exactly true or false" "invalid value is diagnosed generically"
+  case "$(cat "$home/stderr")" in *invalid-value*) fail "the supplied value must not be logged" ;; esac
+  [ ! -e "$home/data/stt-experiment" ] || fail "invalid override enabled comparison"
+  pass "fm-deepgram-stt: invalid explicit values disable comparison without changing the transcript"
+}
+
+test_desk_voice_retry_preserves_shadow_override() {
+  local home saved out start elapsed row sample expected
+  home=$(new_home retry-shadow-true)
+  printf 'shadow = false\n' > "$home/config/stt"
+  long_wav "$home/capture.wav" 1
+  saved=$(desk "$home" keep --purpose dictate "$home/capture.wav") || fail "keep failed"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "local heard this"
+  install_judges "$home"
+  start=$SECONDS
+  out=$(FM_TEST_LOCAL_DELAY=4 FM_STT_SHADOW=true FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    DEEPGRAM_API_KEY=test-key-not-real FM_DEEPGRAM_CURL="$home/curl" \
+    FM_STT_LOCAL_CURL="$home/local-curl" PATH="$home/bin:$PATH" \
+    "$DESK" retry "$saved") || fail "retry failed: $out"
+  elapsed=$(( SECONDS - start ))
+  expected=$(printf 'transcript\t%s\tdeepgram heard this' "$saved")
+  assert_equals "$expected" "$out" "retry returns its transcript"
+  [ "$elapsed" -lt 3 ] || fail "retry waited ${elapsed}s for comparison"
+  [ ! -e "$saved" ] || fail "successful dictation retry should remove its source recording"
+  wait_for_rows "$home" 1
+  row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+  sample=$home/data/stt-experiment/${row##*,}
+  [ -f "$sample/audio.wav" ] || fail "retry removed the recording before its sample was copied"
+
+  home=$(new_home retry-shadow-false)
+  printf 'shadow = true\n' > "$home/config/stt"
+  long_wav "$home/capture.wav" 1
+  saved=$(desk "$home" keep --purpose dictate "$home/capture.wav") || fail "keep failed"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_local_curl "$home" "local heard this"
+  out=$(FM_STT_SHADOW=false desk "$home" retry "$saved") || fail "retry failed: $out"
+  expected=$(printf 'transcript\t%s\tdeepgram heard this' "$saved")
+  assert_equals "$expected" "$out" "false override reaches retry"
+  [ ! -e "$home/data/stt-experiment" ] || fail "retry ignored explicit false"
+  pass "fm-desk-voice retry: explicit shadow overrides survive retry and samples precede source removal"
 }
 
 # --- desk floater launcher -------------------------------------------------
@@ -3161,6 +3462,16 @@ test_stt_vocabulary_preserves_compound_tokens
 test_stt_vocabulary_rewrites_possessive_names
 test_stt_vocabulary_rewrites_complete_compounds_and_valid_shorter_phrases
 test_stt_reads_the_model_from_dotenv
+test_stt_local_primary_uses_the_local_engine
+test_stt_shadow_is_off_by_default
+test_stt_shadow_records_a_judged_row_without_delaying_the_caller
+test_stt_shadow_judge_follows_quota_and_falls_back
+test_stt_local_server_usage_and_missing_agent
+test_stt_shadow_records_a_stopped_local_engine
+test_stt_shadow_override_true_beats_config
+test_stt_shadow_override_false_beats_config
+test_stt_shadow_invalid_override_is_diagnostic_only
+test_desk_voice_retry_preserves_shadow_override
 test_floater_prefers_the_installed_app
 test_floater_release
 test_floater_help_and_option_refusal

@@ -15,6 +15,10 @@
 #   fm_deepgram_auth_config <key>
 #     Write a 0600 curl config file carrying the Authorization header and print
 #     its path, so the key never appears in curl's argv. Caller removes it.
+#   fm_stt_setting <key> <default>
+#     Print one `key = value` setting from the home's private config/stt, or
+#     <default> when the file or key is absent. Last assignment wins; `#`
+#     comment lines are ignored. Callers validate the value.
 #
 # The key is a secret. Callers must never log it, put it in argv of long-lived
 # processes that other users can read, or write it to state/.
@@ -101,4 +105,24 @@ fm_deepgram_auth_config() {  # <key>
     return 1
   }
   printf '%s' "$path"
+}
+
+fm_stt_setting() {  # <key> <default>
+  local key=$1 default=$2 file="$FM_HOME/config/stt" val=
+  if [ -f "$file" ] && [ ! -L "$file" ]; then
+    val=$(awk -v k="$key" '
+      /^[[:space:]]*#/ { next }
+      {
+        line = $0
+        eq = index(line, "=")
+        if (!eq) next
+        name = substr(line, 1, eq - 1); gsub(/[[:space:]]/, "", name)
+        if (name != k) next
+        v = substr(line, eq + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+        found = v
+      }
+      END { printf "%s", found }
+    ' "$file" 2>/dev/null) || val=
+  fi
+  printf '%s' "${val:-$default}"
 }

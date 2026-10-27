@@ -15,6 +15,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Starter settings for a new home: which model does which job, transcription words, and how hard the first mate thinks | [Starter settings](#starter-settings-first-launch), [crew dispatch profiles](#crew-dispatch-profiles-configcrew-dispatchjson), [speech-to-text vocabulary](#speech-to-text-vocabulary-configstt-vocabulary), and [primary effort](#primary-effort-configprimary-effort) |
 | Spoken replies | [Desk voice-out](#desk-voice-out-configspeak) |
+| Speech transcription engine and comparison experiment | [Speech-to-text provider and shadow comparison](#speech-to-text-provider-and-shadow-comparison-configstt) |
 | The call recorder | [Call recorder](#call-recorder-configcall-companion) |
 | A home's own private tools beside the shared code | [Private add-on](#private-add-on-configaddon) and [opt-in skills](#opt-in-skills-configadhd-configsecond-opinion) |
 | Keeping private names out of this public repository | [Private leak words](#private-leak-words-configleak-words) |
@@ -2950,6 +2951,7 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
+FM_STT_SHADOW=           # exact per-invocation speech-comparison override: true or false; see config/stt
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux/paseo/rex support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
@@ -3271,14 +3273,44 @@ It teaches the desk floater's transcription (`bin/fm-deepgram-stt.sh`) the names
 Absent, transcription behaves exactly as without it.
 Lines starting with `#` and blank lines are ignored.
 A plain line is a key term, sent to Deepgram as a recognition hint for that request.
-A `heard => written` line rewrites the printed transcript after Deepgram returns it, for example `pat dot example 1 => pat.example1` for `Pat dot example 1`.
+A `heard => written` line rewrites the printed transcript after the selected engine returns it, for example `pat dot example 1 => pat.example1` for `Pat dot example 1`.
 Use Deepgram's returned spelling and numbers on the left: smart formatting happens before rewrites, so spoken `one` may arrive as `1`.
 Rewrites ignore case, match whole tokens (including email addresses, dotted names, contractions and hyphenated words) while still allowing a possessive `'s` or `’s` after the match, and try the longest heard phrase first.
-`--json` output stays Deepgram's raw response, untouched by rewrites.
+`--json` output stays the selected engine's raw response, untouched by rewrites.
 A malformed line is ignored, and a vocabulary that cannot be read never stops a transcription.
 The default model is `nova-3` because only Nova-3 accepts Deepgram's keyterm hints; `DEEPGRAM_STT_MODEL` in the environment or this home's gitignored `.env` overrides it (the environment wins), and an older model gets the terms as boosted keywords instead.
 The script's header owns the hint parameters, the term caps, and the matching rules.
 [`docs/examples/stt-vocabulary`](examples/stt-vocabulary) is the starter template a new home installs on its first launch ([starter settings](#starter-settings-first-launch)); add your own names below its starter words.
+
+## Speech-to-text provider and shadow comparison (config/stt)
+
+Optional, private, gitignored, and not inherited by secondmate homes.
+It chooses the engine `bin/fm-deepgram-stt.sh` transcribes with and can enable a background experiment comparing Deepgram with a local engine.
+Absent, transcription uses Deepgram and comparison is off.
+Each line is `key = value`; `#` comment lines are ignored and the last assignment wins.
+
+| Key | Values | Default | Effect |
+| --- | --- | --- | --- |
+| `primary` | `deepgram`, `local` | `deepgram` | The engine whose transcript callers receive. |
+| `local_url` | URL | `http://127.0.0.1:8765/v1/audio/transcriptions` | The local engine's OpenAI-compatible transcription endpoint. |
+| `local_model` | model name | `mlx-community/parakeet-tdt-0.6b-v3` | The model the local engine is asked to use. |
+| `shadow` | `true`, `false` | `false` | Also run the other engine and a judge in the background after successful transcriptions. |
+| `judge` | `auto`, `haiku`, `luna` | `auto` | The judge model; `auto` uses the configured quota ordering and falls back if a call fails. |
+| `judge_effort_haiku` | a `claude --effort` level | `medium` | How hard Haiku reasons as the judge. |
+| `judge_effort_luna` | a `pi --thinking` level | `xhigh` | How hard Luna reasons as the judge. |
+
+`FM_STT_SHADOW` is an exact per-invocation `true` or `false` override: `true` enables comparison even when config says false or is absent, and `false` suppresses it even when config says true.
+When unset, the `shadow` setting applies, defaulting to false; invalid explicit values print a generic diagnostic, disable comparison, and leave the primary transcript and exit status unchanged.
+The desk floater passes this value to direct transcription and saved-recording retries.
+
+The local engine uses mlx-audio's OpenAI-compatible server on macOS, listening on 127.0.0.1 only; `bin/fm-stt-local-server.sh` manages its per-user launch agent, and `bin/fm-stt-local.sh` sends transcription requests.
+With `primary = local`, no Deepgram key is needed and the same vocabulary rewrites apply.
+
+With comparison enabled, the primary transcript returns without waiting for the detached comparison.
+`bin/fm-stt-shadow.sh` runs the other engine on the same audio, asks the configured judge which transcript is better, and appends a row to `data/stt-experiment/results.csv`.
+Each sample keeps its audio, both raw transcripts, and the judge's answer under `data/stt-experiment/samples/` for later review.
+The local engine being unavailable is recorded in the results; comparison failures do not change the primary transcription.
+The script headers own the endpoint, judgement, and CSV mechanics.
 
 ## Call recorder (config/call-companion)
 
