@@ -56,6 +56,8 @@ check_queries() {
   out=$("$SURFACE" list --topology herdr-topology) || fail "topology query failed"
   assert_contains "$out" $'herdr-worker-presentation\t' "Herdr topology query"
   out=$("$SURFACE" list --config) || fail "config query failed"
+  assert_contains "$out" $'pr-description-skill\t' "catch-up must retain the fork's PR guidance capability"
+  assert_contains "$out" $'meeting-intake\t' "catch-up must retain upstream's meeting intake capability"
   assert_contains "$out" 'primary-handoff' "config query misses primary handoff"
   assert_contains "$out" 'config/action-captain-secret' "config query misses action secret"
   out=$("$SURFACE" port-allowlist) || fail "port allowlist query failed"

@@ -189,7 +189,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-account-lib.sh`      | Shared named-account resolution, derived `data/accounts/<vendor>/<name>` homes, and the missing/logged-out/wrong-seat launch gate |
 | `fm-status-bar.sh`       | Render the canonical guarded primary status bar on native surfaces and on tmux or herdr companion panes (docs/status-bar.md) |
 | `fm-cursor-statusline.sh` | Opt-in install, status, and exact-restore uninstall of Firstmate's status line in Cursor CLI's own user config (docs/status-bar.md) |
-| `fm-fleet-status-lib.sh`  | Fold `fm-crew-state.sh` and the endpoint classifier into the status row's alive/validating/paused/attention/stopped counts, out of band and cached (docs/status-bar.md) |
+| `fm-fleet-status-lib.sh`  | Fold `fm-crew-state.sh` and the endpoint classifier into the status row's working/validating/paused/attention/ready/stopped counts, out of band and cached (docs/status-bar.md) |
 | `fm-codex-session-metrics-lib.sh` | Supply the Codex companion's real context and provider-quota figures from the exact followed session and the account owner (docs/status-bar.md) |
 | `fm-status-cache-lib.sh` | Shared status-row cache freshness, staleness bounds, and single-refresh claim ownership |
 | `fm-landed-lib.sh`       | Shared newest-first completion-recency ordering for every capped landed surface       |
@@ -221,6 +221,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-call-final-notes.py` | Write paraphrased end-of-call notes that account for every item the live desk showed |
 | `fm-call-speaker-split.py` | Label transcribed speech by the recorded track that carried it |
 | `fm-call-lib.sh` | Shared call-recorder paths and `config/call-companion` settings |
+| `fm-meetings.sh` | Meeting intake over Anarlog: `arm` registers a watcher check that announces each finished personal meeting (asking Anarlog for its after-the-call speaker pass when it ran none) and imports shared glasses calls, `intake` starts clear follow-ups through the inbox and holds the rest for the captain's tap, `recall` answers what was agreed (docs/meetings.md) |
+| `fm-meetings.py` | The engine behind `fm-meetings.sh` |
 | `fm-desk-floater-windows.sh` | From inside WSL 2, build, install, update, start, stop and remove the Windows floater with Windows' own C# compiler, and serve its `bridge` calls through the shared desk-voice, speech-to-text and speak scripts (docs/desk-floater-windows.md) |
 | `fm-desk-play-windows.sh` | afplay stand-in `fm-speak.sh` uses inside WSL 2 once the Windows floater is installed: plays one reply through the Windows speakers and stops on a stop (docs/desk-floater-windows.md) |
 | `fm-web.sh` | Serve the localhost chat page onto the primary first mate: its conversation, a message box that sends through `fm-desk-voice.sh send`, and the bridge glance (docs/web.md) |
