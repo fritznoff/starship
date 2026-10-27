@@ -151,8 +151,9 @@
 # recordings lists them oldest first, one line each:
 #   <path> TAB <purpose> TAB <attempts> TAB <saved-at> TAB <last reason>
 # retry transcribes the named saved recordings again (every saved one when
-# none is named) through bin/fm-deepgram-stt.sh, one at a time under one lock,
-# and prints one line each (exit 0):
+# none is named) through bin/fm-deepgram-stt.sh, one at a time under one lock.
+# An exported FM_STT_SHADOW override is inherited unchanged for each retry.
+# It prints one line each (exit 0):
 #   delivered TAB <path> TAB <send outcome>   talk to Firstmate: the words went
 #                                         through send above, and the recording
 #                                         is removed

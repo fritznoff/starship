@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Transcribe one audio file with Deepgram (push-to-talk desk floater path).
+# Transcribe one audio file with Deepgram (push-to-talk desk floater path), or
+# with the local engine when the home selects it.
 #
 # Usage:
 #   fm-deepgram-stt.sh [--json] <audio-file>
@@ -10,6 +11,21 @@
 # in the environment or the home's gitignored .env; the environment wins).
 #
 # Prints the transcript text on stdout (or the raw JSON with --json).
+#
+# Provider: `primary = deepgram` (the default) or `primary = local` in the
+# home's private config/stt (docs/configuration.md owns the file). Local hands
+# the file to bin/fm-stt-local.sh, needs no key, applies the same vocabulary
+# rewrites below, and --json prints the local engine's raw `{"text": ...}`.
+#
+# Shadow comparison: `FM_STT_SHADOW=true|false`, when set, overrides the
+# config/stt `shadow` setting for this invocation; otherwise that setting
+# defaults to false. Invalid explicit values are diagnosed and disable the
+# comparison without changing the primary transcription. After a successful
+# transcription, the audio and raw answer are copied into data/stt-experiment/
+# and bin/fm-stt-shadow.sh is started detached to run the other provider and a
+# judge. FM_STT_SOURCE names the caller in its row; otherwise the caller's
+# command line is read here, while the caller is still running. The comparison
+# cannot delay or fail this call.
 #
 # Vocabulary: an optional private $FM_HOME/config/stt-vocabulary (gitignored;
 # absent changes nothing).
@@ -50,8 +66,8 @@
 #
 # Exit:
 #   0  transcript printed (may be empty if Deepgram heard silence)
-#   1  request failure
-#   2  missing key, missing file, or bad usage
+#   1  request or local-engine failure
+#   2  missing required key, missing file, or bad usage
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,7 +207,10 @@ if mode == "query":
 
 data = json.load(open(sys.argv[3], encoding="utf-8"))
 try:
-    text = data["results"]["channels"][0]["alternatives"][0].get("transcript", "")
+    if isinstance(data, dict) and isinstance(data.get("text"), str):
+        text = data["text"]  # the local engine's OpenAI-shaped answer
+    else:
+        text = data["results"]["channels"][0]["alternatives"][0].get("transcript", "")
 except (KeyError, IndexError, TypeError) as exc:
     note(f"unexpected JSON shape: {exc}")
     raise SystemExit(1)
@@ -214,8 +233,48 @@ extract_transcript() {  # <vocab> <json-file>
   python3 -c "$(vocab_py)" transcript "$1" "$2"
 }
 
+# Hand one finished transcription to bin/fm-stt-shadow.sh, detached in its own
+# process group with its standard streams closed, so a caller reading this
+# script's output to EOF never waits for it. Copies the audio first because
+# callers may delete their recording as soon as this script exits. Never
+# fails: any problem only means no sample.
+start_shadow() {  # <enabled> <provider> <audio> <json-file> <elapsed-ms>
+  local enabled=$1 provider=$2 audio=$3 json=$4 ms=$5 root sample ext caller pid
+  [ "$enabled" = true ] || return 0
+  root=$FM_HOME/data/stt-experiment
+  (umask 077 && mkdir -p "$root/samples") || return 0
+  sample=$(umask 077 && mktemp -d "$root/samples/$(date -u +%Y%m%dT%H%M%SZ)-XXXX") || return 0
+  ext=${audio##*.}
+  case "$ext" in */*|"$audio") ext=audio ;; esac
+  cp "$audio" "$sample/audio.$ext" && cp "$json" "$sample/$provider.json" || return 0
+  caller=${FM_STT_SOURCE:-$(ps -o command= -p "$PPID" 2>/dev/null || true)}
+  set -m
+  "$SCRIPT_DIR/fm-stt-shadow.sh" "$sample" "$provider" "$ms" "$caller" \
+    </dev/null >/dev/null 2>>"$root/shadow.log" &
+  pid=$!
+  set +m
+  disown "$pid" 2>/dev/null || true
+}
+
+resolve_shadow() {
+  if [ "${FM_STT_SHADOW+x}" = x ]; then
+    case "$FM_STT_SHADOW" in
+      true|false) printf '%s' "$FM_STT_SHADOW" ;;
+      *) note 'FM_STT_SHADOW must be exactly true or false; comparison disabled'; printf false ;;
+    esac
+  else
+    fm_stt_setting shadow false
+  fi
+}
+
+now_ms() {
+  local t=${EPOCHREALTIME/./}
+  printf '%s' "$(( ${t:-0} / 1000 ))"
+}
+
 main() {
   local json_out=false audio='' key model http tmp ctype auth_cfg vocab extra bytes max_time
+  local provider started rc shadow
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help|-h) usage; exit 0 ;;
@@ -228,11 +287,29 @@ main() {
   [ "$#" -eq 1 ] || refuse "usage: fm-deepgram-stt.sh [--json] <audio-file>"
   audio=$1
   [ -f "$audio" ] || refuse "audio file not found: $audio"
+  vocab=$FM_HOME/config/stt-vocabulary
+  shadow=$(resolve_shadow)
+  provider=${FM_STT_PROVIDER:-$(fm_stt_setting primary deepgram)}
+  started=$(now_ms)
+
+  case "$provider" in
+    deepgram) ;;
+    local)
+      tmp=$(mktemp "${TMPDIR:-/tmp}/fm-deepgram-stt.XXXXXX") || die "cannot create a temporary file"
+      rc=0
+      "$SCRIPT_DIR/fm-stt-local.sh" --json "$audio" > "$tmp" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp"
+        die "local engine transcription failed (fm-stt-local exit $rc)"
+      fi
+      finish "$json_out" "$vocab" "$tmp" local "$audio" "$(( $(now_ms) - started ))" "$shadow"
+      ;;
+    *) refuse "config/stt primary must be deepgram or local: $provider" ;;
+  esac
 
   key=$(fm_deepgram_api_key)
   [ -n "$key" ] || refuse "DEEPGRAM_API_KEY is not set (env or gitignored .env)"
   model=$(fm_deepgram_stt_model)
-  vocab=$FM_HOME/config/stt-vocabulary
   extra=$(vocab_query "$vocab" "$model")
 
   case "$audio" in
@@ -280,16 +357,19 @@ main() {
     exit 1
   fi
 
-  if [ "$json_out" = true ]; then
-    cat "$tmp"
-    rm -f "$tmp"
-    exit 0
-  fi
+  finish "$json_out" "$vocab" "$tmp" deepgram "$audio" "$(( $(now_ms) - started ))" "$shadow"
+}
 
-  if ! extract_transcript "$vocab" "$tmp"; then
+# Print one provider's answer, start the shadow comparison, and exit.
+finish() {  # <json-out> <vocab> <json-file> <provider> <audio> <elapsed-ms> <shadow>
+  local tmp=$3
+  if [ "$1" = true ]; then
+    cat "$tmp"
+  elif ! extract_transcript "$2" "$tmp"; then
     rm -f "$tmp"
-    die "could not parse Deepgram transcript JSON"
+    die "could not parse $4 transcript JSON"
   fi
+  start_shadow "$7" "$4" "$5" "$tmp" "$6" || true
   rm -f "$tmp"
   exit 0
 }
