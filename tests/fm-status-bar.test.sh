@@ -1761,6 +1761,160 @@ test_herdr_sound_field() {
   pass "status bar: Herdr sound is live, defaults on, and absent outside readable Herdr config"
 }
 
+
+# Exercise the actual extension factory, asynchronous child and installed TUI width
+# helper. A private renderer and controlled clock isolate this from fleet state.
+test_pi_footer_refresh_lifecycle() {
+  local fixture="$TMP_ROOT/pi-footer" package_dir out
+  package_dir=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+  if [ ! -f "$package_dir/package.json" ]; then
+    echo "skip: installed Pi package unavailable for footer lifecycle; set FM_PI_PACKAGE_DIR"
+    return 0
+  fi
+  mkdir -p "$fixture/.pi/extensions" "$fixture/bin" "$fixture/node_modules/@earendil-works" "$fixture/state"
+  cp "$ROOT/.pi/extensions/fm-primary-status-bar.ts" "$fixture/.pi/extensions/"
+  ln -s "$package_dir/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
+  printf '{"type":"module"}\n' > "$fixture/package.json"
+  cat > "$fixture/bin/fm-status-bar.sh" <<'SH'
+#!/usr/bin/env bash
+exec node "$FOOTER_FIXTURE/renderer.mjs" "$@"
+SH
+  cat > "$fixture/renderer.mjs" <<'JS'
+import { readFileSync, appendFileSync } from 'node:fs';
+const root = process.env.FOOTER_FIXTURE;
+const setting = JSON.parse(readFileSync(`${root}/control.json`, 'utf8'));
+appendFileSync(`${root}/calls`, `${JSON.stringify(process.argv.slice(2))}\n`);
+if (setting.delay) await new Promise(resolve => setTimeout(resolve, setting.delay));
+if (setting.mode === 'exit') {
+  console.error('SECRET TRANSCRIPT');
+  process.exit(7);
+}
+if (setting.mode === 'overflow') console.log('x'.repeat(20000));
+else if (setting.mode !== 'empty') console.log(setting.row || '⚓ fresh │ model │ fields');
+JS
+  chmod +x "$fixture/bin/fm-status-bar.sh"
+  out=$(FOOTER_FIXTURE="$fixture" FM_PRIMARY_HARNESS=pi FM_STATE_OVERRIDE="$fixture/state" \
+    node --input-type=module 2>&1 <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const root = process.env.FOOTER_FIXTURE;
+const { visibleWidth } = await import(pathToFileURL(`${root}/node_modules/@earendil-works/pi-tui/dist/index.js`));
+const { default: extension } = await import(pathToFileURL(`${root}/.pi/extensions/fm-primary-status-bar.ts`));
+let now = 1_000_000;
+Date.now = () => now;
+const timers = new Set();
+globalThis.setInterval = (callback) => {
+  const timer = { callback, unref() {} };
+  timers.add(timer);
+  return timer;
+};
+globalThis.clearInterval = timer => timers.delete(timer);
+const tick = () => { for (const timer of timers) timer.callback(); };
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(predicate, description) {
+  for (let i = 0; i < 250; i++) {
+    if (predicate()) return;
+    await delay(20);
+  }
+  throw Error(`timed out: ${description}`);
+}
+const set = setting => writeFileSync(`${root}/control.json`, JSON.stringify(setting));
+const calls = () => existsSync(`${root}/calls`) ? readFileSync(`${root}/calls`, 'utf8').trim().split('\n') : [];
+const log = () => existsSync(`${root}/state/pi-status-bar.log`) ? readFileSync(`${root}/state/pi-status-bar.log`, 'utf8') : '';
+const handlers = new Map();
+let component;
+let renders = 0;
+const pi = { on: (name, fn) => handlers.set(name, fn), getThinkingLevel: () => 'medium' };
+const ctx = {
+  mode: 'tui', model: { id: 'test-model' }, getContextUsage: () => ({ percent: 34.8 }),
+  sessionManager: { getEntries: () => [{ type: 'message', message: { role: 'assistant', usage: { cost: { total: 0.25 } } } }] },
+  ui: { setFooter: factory => { component = factory({ requestRender: () => renders++ }); } },
+};
+extension(pi);
+const start = () => handlers.get('session_start')({}, ctx);
+set({ delay: 300 });
+start();
+const started = performance.now();
+assert.match(component.render(200)[0], /STATUS LOADING/);
+for (let i = 0; i < 100; i++) component.render(200);
+assert.ok(performance.now() - started < 100, 'render must not wait for collection');
+await until(() => calls().length === 1, 'initial child starts');
+for (let i = 0; i < 10; i++) { tick(); component.invalidate(); }
+await delay(50);
+assert.equal(calls().length, 1, 'one in-flight refresh');
+await until(() => component.render(200)[0].includes('fresh'), 'initial success');
+const good = component.render(200)[0];
+assert.deepEqual(JSON.parse(calls()[0]), ['--adapter','pi','--model','test-model','--effort','medium','--context-used','34','--quota-used','--','--cost','0.25']);
+assert.equal(component.render(0)[0], '');
+assert.ok(visibleWidth(component.render(12)[0]) <= 12);
+for (const [mode, reason] of [['exit', 'exit'], ['empty', 'empty-output'], ['timeout', 'timeout'], ['overflow', 'output-limit']]) {
+  now += 60_001;
+  // Refresh success first to keep this failure inside the last-good grace age.
+  set({}); tick();
+  await until(() => !component.render(200)[0].includes('STALE'), 'new success');
+  const before = renders;
+  set({ mode, delay: mode === 'timeout' ? 5000 : 0 }); tick();
+  await until(() => renders > before + 1, `${reason} completes`);
+  assert.equal(component.render(200)[0], good, `${reason} keeps last good row`);
+  await until(() => log().includes(`reason=${reason}`), `${reason} diagnostic`);
+  const diagnostic = log();
+  set({ mode: 'empty' }); tick();
+  const after = renders;
+  await until(() => renders > after, 'second failure');
+  assert.equal(log(), diagnostic, 'failure diagnostics rate limited');
+  now += 9999;
+  assert.equal(component.render(200)[0], good, 'grace boundary');
+  now += 1;
+  assert.match(component.render(200)[0], /STALE 10s/);
+  assert.ok(component.render(200)[0].includes(good), 'stale row retains fields');
+  assert.match(component.render(10)[0], /STALE/, 'narrow row exposes staleness first');
+  set({ row: '⚓ recovered' }); tick();
+  await until(() => component.render(200)[0] === '⚓ recovered', 'recovery');
+  set({}); tick();
+  await until(() => component.render(200)[0] === good, 'normal row returns');
+}
+assert.match(log(), /reason=exit status=7/);
+assert.ok(!log().includes('SECRET'), 'no stderr/transcript in diagnostics');
+// Startup failure stays visible, and oversized diagnostic history is bounded.
+writeFileSync(`${root}/state/pi-status-bar.log`, 'x'.repeat(33000));
+set({ mode: 'empty' }); start();
+await until(() => component.render(200)[0].includes('UNAVAILABLE'), 'startup failure');
+await until(() => statSync(`${root}/state/pi-status-bar.log`).size < 1024, 'bounded log');
+// Replacing a session while collection is running cannot publish its old row.
+const oldCount = calls().length;
+set({ delay: 500, row: 'OLD SESSION' }); tick();
+await until(() => calls().length > oldCount, 'old session child starts');
+const previous = component;
+set({ row: '⚓ new session' }); start();
+await until(() => component.render(200)[0] === '⚓ new session', 'replacement session');
+await delay(600);
+assert.equal(component.render(200)[0], '⚓ new session');
+assert.ok(!previous.render(200)[0].includes('OLD SESSION'));
+assert.equal(timers.size, 1);
+const disposalCount = calls().length;
+set({ delay: 500, row: 'AFTER DISPOSE' }); tick();
+await until(() => calls().length > disposalCount, 'disposal child starts');
+const disposed = component;
+handlers.get('session_shutdown')();
+disposed.dispose();
+const renderCount = renders;
+await delay(600);
+assert.equal(renders, renderCount, 'disposed callbacks cannot request render');
+assert.ok(!disposed.render(200)[0].includes('AFTER DISPOSE'));
+assert.equal(timers.size, 0, 'shutdown clears refresh');
+const count = calls().length;
+ctx.mode = 'json'; start(); tick();
+await delay(50);
+assert.equal(calls().length, count, 'non-TUI session is inert');
+console.log('Pi footer: transient failures, staleness, diagnostics, responsiveness and lifecycle passed');
+JS
+  ) || fail "Pi footer lifecycle regression: $out"
+  pass "$out"
+}
+
+test_pi_footer_refresh_lifecycle
+
 test_herdr_sound_field
 test_contract_order_and_fleet_projection
 test_the_headline_is_live_agents_and_stopped_records_are_visible
