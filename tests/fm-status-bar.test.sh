@@ -1462,6 +1462,7 @@ SH
   elapsed=$SECONDS
   out=$(PATH="$bin:$FAKEBIN:$PATH" \
     FM_HOME="$HOME_FIX" \
+    FM_STATE_OVERRIDE="$state" \
     FM_PRIMARY_HARNESS=codex \
     FM_STATUS_BAR_NOW=1000 \
     FM_STATUS_BAR_INTERVAL=0 \
