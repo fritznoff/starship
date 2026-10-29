@@ -150,7 +150,14 @@ This keeps the tracked project setting inert for an unguarded manual Claude laun
 Tracked `.pi/extensions/fm-primary-status-bar.ts` uses Pi's native `ctx.ui.setFooter()` API.
 It gets model, thinking level, context use, and session-entry cost from Pi, then delegates canonical rendering and fleet sampling to `bin/fm-status-bar.sh`.
 Pi 0.80.10 exposes no provider-quota value to this footer, so quota is `--`.
-The extension uses Pi TUI's `truncateToWidth()` and a one-second cached refresh, and it does not replace the editor or keyboard controls.
+The extension uses Pi TUI's `truncateToWidth()` and a one-second asynchronous refresh with at most one renderer in flight, and it does not replace the editor or keyboard controls.
+Each collection has a 1500 ms deadline and a 16 KiB output bound; rendering reads the completed cache without waiting for the subprocess.
+A failed refresh retains the last successful row; once that row is ten seconds old, a leading `⚠ STALE <age>s` warning makes its age visible even on narrow terminals.
+Before the first successful reading, the footer shows `STATUS LOADING` during collection and `STATUS UNAVAILABLE` after failure.
+A successful refresh restores the ordinary row, and session shutdown or footer replacement cancels the old collection and discards its callbacks.
+Failure diagnostics go to `state/pi-status-bar.log` in the selected home (`FM_STATE_OVERRIDE` takes precedence), at most once per minute per footer instance, resetting the file at 32 KiB before the next bounded entry.
+They contain only a timestamp, failure category (`timeout`, `exit`, `empty-output`, or `output-limit`), numeric exit status and signal classification, never renderer output, arguments or transcript content.
+`tests/fm-status-bar.test.sh` exercises the extension factory with an isolated renderer and the installed Pi TUI width helper; set `FM_PI_PACKAGE_DIR` if the installed package is outside the global npm root.
 The extension is inert unless `bin/fm-primary.sh` supplied `FM_PRIMARY_HARNESS=pi`.
 
 ### Cursor CLI

@@ -340,6 +340,9 @@ The floater hands each message, with or without screenshots, to `bin/fm-desk-voi
 The words arrive at once, even while Firstmate is mid-task, and that pane does not need focus.
 Only the session holding this home's session lock is ever typed into, and only after its pane is proven to host that session; the script header owns the resolution and the supported runtime backends.
 The pane must also show its chat input, read as empty or holding a draft.
+When a primary hides its terminal environment from process inspection, as Pi can on macOS, a private routing hint remembered at verified startup can recover its pane.
+That recovered route requires an empty chat box and the same live session owner; a draft, busy or unreadable Pi screen, or modal prompt still sends the message to the mailbox.
+The guarded publisher in `bin/fm-supervisor-target-lib.sh` can also be called once by the owning primary's tool shell without repeating startup.
 A pane showing a shell or a screen that cannot be read counts as unreachable, because typed words there would become keypresses.
 So does a pane showing a selection dialog, such as a permission prompt, a question, or a picker: a pointer on a numbered option, or an `Enter to select` or `Esc to cancel` footer, sends the transcript to the mailbox so it cannot pick an option.
 
@@ -357,7 +360,7 @@ If the message cannot be proven in the box before Enter, it is cleared, your dra
 If the box cannot be cleared, or the message has not appeared in it at all, no further keys are sent, so a late paste cannot replace your stashed draft, and the send reports that the submit was not confirmed instead.
 Whenever your draft cannot be put back, the send notes that it is still stashed; Ctrl+S in an empty chat box brings it back.
 After Enter the send counts as confirmed only once the box is empty or shows your draft again; otherwise it reports that the submit was not confirmed.
-With another harness as the primary, a message with words joins the draft and is submitted with it.
+With another harness as the primary on a process-discovered route, a message with words joins the draft and is submitted with it.
 
 When the chat pane cannot be reached, is not showing its chat input, or refuses the text, the transcript goes to the mailbox instead:
 

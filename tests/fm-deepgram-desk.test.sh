@@ -1906,18 +1906,22 @@ test_desk_voice_retries_run_one_at_a_time() {
 # burst into a placeholder plus its literal tail. Enter expands a placeholder
 # back into its text.
 
-desk_send_fixture() {  # <name> [tmux|herdr] [harness] -> home; starts the stand-in primary
-  local name=$1 backend=${2:-herdr} harness=${3:-claude} home dir fb pid i envs marker
+desk_send_fixture() {  # <name> [tmux|herdr] [harness] [hint=0|1] -> home; starts the stand-in primary
+  local name=$1 backend=${2:-herdr} harness=${3:-claude} hint=${4:-0} home dir fb pid i envs marker
   local -a pane_env
   home=$(new_home "$name")
   dir="$home/fixture"
   fb="$dir/bin"
+  # Hint cases need only a verified owner, not a real vendor runtime. Python's
+  # script path supplies the existing Claude interpreter-identity signal; the
+  # fake backend independently supplies the Pi/Codex native composer identity.
+  [ "$hint" != 1 ] || harness=claude
   mkdir -p "$fb" "$dir/$harness"
   # A node linked under the harness's own name is a process whose name the
   # session-lock identity reads as that harness, as a real `claude` is.
   # Without node, a python script under the harness's directory stands in.
   if command -v node >/dev/null 2>&1; then
-    ln -s "$(command -v node)" "$dir/$harness/$harness"
+    ln -s "$(node -p process.execPath)" "$dir/$harness/$harness"
     set -- "$dir/$harness/$harness" -e 'setTimeout(() => {}, 60000)'
   else
     printf 'import time\ntime.sleep(60)\n' > "$dir/$harness/holder.py"
@@ -1940,9 +1944,11 @@ case "${1:-} ${2:-}" in
     if [ -e "$dir/unfocused" ]; then f=false; else f=true; fi
     printf '{"result":{"pane":{"pane_id":"%s","focused":%s}}}\n' "$3" "$f" ;;
   "pane process-info")
+    if [ -e "$dir/wrong-socket" ] && [ "${HERDR_SOCKET_PATH:-}" != "$dir/herdr.sock" ]; then exit 1; fi
     printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_processes":[]}}}\n' \
       "$4" "$(cat "$dir/shell-pid")" ;;
   "pane read")
+    [ ! -e "$dir/change-lock" ] || printf '99999999\n' > "${FM_HOME:?}/state/.lock"
     if [ -e "$dir/queued" ]; then
       left=$(( $(cat "$dir/queued-reads") - 1 ))
       if [ "$left" -le 0 ]; then draw_queued; else printf '%s' "$left" > "$dir/queued-reads"; fi
@@ -1982,6 +1988,7 @@ case "${1:-} ${2:-}" in
     elif [ -e "$dir/ghost" ]; then
       row+="${esc}[2m$(cat "$dir/ghost")${esc}[0m"
     fi
+    [ ! -e "$dir/pi-shape" ] || row="$draft"
     stash=0
     [ ! -e "$dir/stash" ] || [ -e "$dir/no-marker" ] || stash=1
     [ "$stash" = 0 ] || [ ! -e "$dir/narrow" ] || stash=2
@@ -2080,6 +2087,7 @@ case "${1:-} ${2:-}" in
     esac ;;
   "agent get")
     if [ -e "$dir/entered" ] && [ ! -e "$dir/never-works" ] && [ ! -e "$dir/agent-idle" ]; then s=working; else s=idle; fi
+    [ ! -e "$dir/agent-status" ] || s=$(cat "$dir/agent-status")
     if [ -e "$dir/agent" ]; then
       printf '{"result":{"agent":{"agent":"%s","agent_status":"%s"}}}\n' "$(cat "$dir/agent")" "$s"
     else
@@ -2133,10 +2141,40 @@ SH
       HERDR_SOCKET_PATH="$dir/herdr.sock")
     marker=HERDR_PANE_ID=w7:p3
   fi
+  if [ "$hint" = 1 ]; then
+    # Real owner, but no routing in its initial environment. Only its tool
+    # child inherits the route used for publication, like a title-hidden TUI.
+    cat > "$dir/publish.sh" <<'SH'
+#!/usr/bin/env bash
+. "$1/bin/fm-supervisor-target-lib.sh"
+fm_supervisor_publish_primary_pane "$2/state"
+SH
+    cat > "$dir/$harness/holder.py" <<'PYCODE'
+import os, subprocess, sys, time
+root, home, backend = sys.argv[1:]
+directory = home + "/fixture"
+for _ in range(150):
+    if os.path.exists(home + "/state/.lock"):
+        break
+    time.sleep(0.03)
+route = ({"TMUX": directory + "/tmux.sock,1,0", "TMUX_PANE": "%9"} if backend == "tmux" else
+         {"HERDR_ENV": "1", "HERDR_PANE_ID": "w7:p3", "HERDR_SESSION": "fm-desk-send-test",
+          "HERDR_SOCKET_PATH": directory + "/herdr.sock"})
+result = subprocess.run(["bash", directory + "/publish.sh", root, home], env=dict(os.environ, **route))
+with open(directory + "/published", "w") as f:
+    f.write(str(result.returncode))
+time.sleep(60)
+PYCODE
+    rm -f "$dir/$harness/$harness"
+    ln -s "$(python3 -c 'import sys; print(sys.executable)')" "$dir/$harness/$harness"
+    set -- "$dir/$harness/$harness" "$dir/$harness/holder.py" "$ROOT" "$home" "$backend"
+    pane_env=()
+  fi
   # The stand-in server is the stand-in primary's parent, as a multiplexer
   # server is the parent of the pane that hosts a real primary.
   # shellcheck disable=SC2016  # expanded by the inner shell
-  env "${pane_env[@]}" bash -c \
+  env -u TMUX -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_SOCKET_PATH \
+    ${pane_env[@]+"${pane_env[@]}"} bash -c \
     'out=$1; shift; "$@" >/dev/null 2>&1 & printf "%s\n" "$!" > "$out.tmp"; mv "$out.tmp" "$out"; wait' \
     _ "$dir/holder-pid" "$@" >/dev/null 2>&1 &
   printf '%s\n' "$!" > "$dir/server-pid"
@@ -2149,6 +2187,15 @@ SH
   # The pane's root process is the stand-in itself unless a case says otherwise.
   printf '%s\n' "$pid" > "$dir/shell-pid"
   : > "$dir/draft"
+  if [ "$hint" = 1 ]; then
+    for i in $(seq 1 50); do
+      [ ! -e "$dir/published" ] || break
+      sleep 0.1
+    done
+    [ "$(cat "$dir/published" 2>/dev/null)" = 0 ] || return 1
+    printf '%s\n' "$home"
+    return 0
+  fi
   for i in $(seq 1 50); do
     if [ -r "/proc/$pid/environ" ]; then
       envs=$(tr '\0' '\n' < "/proc/$pid/environ")
@@ -2195,6 +2242,97 @@ herdr_calls() {  # <home> <subcommand words...> -> matching log lines, readable
 
 inbox_count() {  # <home>
   find "$home/state/desk-voice/inbox" -name '*.json' 2>/dev/null | wc -l | tr -d ' '
+}
+
+# Route-hint tests use the real publisher from the stand-in owner's tool child.
+# All endpoint calls remain fixture-local and no live UI receives input.
+test_desk_voice_recovered_route() {
+  local home out case record
+  for case in empty pending working blocked unknown dialog wrong-pid reused-pid malformed partial unsafe-key unsafe-value unsafe-mode duplicate-key symlink foreign-root wrong-socket changed-lock send-failed uncertain legacy-bad; do
+    home=$(desk_send_fixture "hint-$case" herdr pi 1) || fail "hint fixture failed: $case"
+    record="$home/state/.primary-pane"
+    printf 'pi' > "$home/fixture/agent"
+    touch "$home/fixture/pi-shape"
+    printf 'done' > "$home/fixture/agent-status"
+    printf 'transcript\n────────────────────────\n❯\n────────────────────────\n footer\n' > "$home/fixture/screen"
+    case "$case" in
+      pending) printf 'draft stays' > "$home/fixture/draft" ;;
+      working|blocked|unknown) printf '%s' "$case" > "$home/fixture/agent-status" ;;
+      dialog) printf 'Pick a model\n > 1. One\n   2. Two\nEnter to select\n' > "$home/fixture/modal" ;;
+      wrong-pid|reused-pid|partial|unsafe-key|unsafe-value|wrong-socket)
+        python3 - "$record" "$case" <<'PYCODE'
+import json, sys
+path, case = sys.argv[1:]
+with open(path) as f: record = json.load(f)
+if case == "wrong-pid": record["pid"] = "99999999"
+elif case == "reused-pid": record["start"] = "starttime=1"
+elif case == "partial": del record["start"]
+elif case == "unsafe-key": record["route"]["BASH_ENV"] = "/tmp/not-routing"
+elif case == "unsafe-value": record["route"]["HERDR_PANE_ID"] = "pane\nINJECT=bad"
+else: record["route"]["HERDR_SOCKET_PATH"] = "/wrong/socket"
+with open(path, "w") as f: json.dump(record, f)
+PYCODE
+        [ "$case" != wrong-socket ] || touch "$home/fixture/wrong-socket"
+        ;;
+      malformed) printf '{' > "$record" ;;
+      unsafe-mode) chmod 0644 "$record" ;;
+      duplicate-key) python3 - "$record" <<'PYCODE'
+import sys
+path = sys.argv[1]
+with open(path) as f: data = f.read()
+with open(path, "w") as f: f.write(data.replace('"schema": 1', '"schema": 2, "schema": 1'))
+PYCODE
+        ;;
+      symlink) mv "$record" "$record.real"; ln -s "$record.real" "$record" ;;
+      foreign-root) printf '99999999\n' > "$home/fixture/shell-pid" ;;
+      changed-lock) touch "$home/fixture/change-lock" ;;
+      send-failed) touch "$home/fixture/send-text-fails" ;;
+      uncertain) touch "$home/fixture/never-works" ;;
+      legacy-bad)
+        # Covered by the existing ps-route cases below; a bad optional record
+        # must not interfere with their known route.
+        desk_send_done "$home"
+        home=$(desk_send_fixture hint-legacy) || fail "legacy fixture failed"
+        printf '{' > "$home/state/.primary-pane"
+        ;;
+    esac
+    case "$case" in
+      pending|working|blocked|unknown|dialog)
+        out=$(desk_ring "$home" "routing ring") || fail "$case ring failed"
+        [ "$out" = not-rung ] || fail "$case unsafe ring: $out"
+        ;;
+    esac
+    out=$(desk_send "$home" "voice route test") || fail "$case send failed: $out"
+    case "$case" in
+      empty|legacy-bad)
+        assert_contains "$out" 'sent: herdr' "$case submits once"
+        [ "$(cat "$home/fixture/submitted")" = 'voice route test' ] || fail "$case submission wrong"
+        [ "$(inbox_count "$home")" = 0 ] || fail "$case duplicate mailbox"
+        [ "$(herdr_calls "$home" pane send-text | wc -l | tr -d ' ')" = 1 ] || fail "$case duplicate paste"
+        ;;
+      uncertain)
+        assert_contains "$out" 'sent-unconfirmed:' "uncertain delivery must not be retried"
+        [ "$(inbox_count "$home")" = 0 ] || fail "uncertain duplicate mailbox"
+        [ "$(herdr_calls "$home" pane send-text | wc -l | tr -d ' ')" = 1 ] || fail "uncertain duplicate paste"
+        ;;
+      *)
+        assert_contains "$out" 'mailbox:' "$case must queue"
+        [ "$(inbox_count "$home")" = 1 ] || fail "$case must queue exactly once"
+        [ -z "$(herdr_calls "$home" pane send-keys)" ] || fail "$case sent keys"
+        [ "$case" = send-failed ] || [ -z "$(herdr_calls "$home" pane send-text)" ] || fail "$case typed into unsafe pane"
+        [ "$case" != pending ] || [ "$(cat "$home/fixture/draft")" = 'draft stays' ] || fail "draft changed"
+        ;;
+    esac
+    desk_send_done "$home"
+  done
+  # tmux routing uses the same hint but retains its own composer/root proof.
+  home=$(desk_send_fixture hint-tmux tmux codex 1) || fail "tmux hint fixture failed"
+  touch "$home/fixture/tmux-composer"
+  out=$(desk_send "$home" "tmux hint") || fail "tmux hint send failed"
+  assert_contains "$out" 'sent: tmux %9' "tmux recovered route"
+  [ "$(inbox_count "$home")" = 0 ] || fail "tmux duplicate mailbox"
+  desk_send_done "$home"
+  pass "fm-desk-voice: owner-bound recovery preserves composer, ownership and exactly-once guards"
 }
 
 test_desk_voice_send_types_into_the_primary_pane() {
@@ -3497,6 +3635,7 @@ test_desk_voice_keep_never_removes_a_saved_recording
 test_desk_voice_retry_keeps_the_recording_when_the_mailbox_cannot_save
 test_desk_voice_retry_refuses_anything_but_a_saved_recording
 test_desk_voice_retries_run_one_at_a_time
+test_desk_voice_recovered_route
 test_desk_voice_send_types_into_the_primary_pane
 test_desk_voice_send_falls_back_without_a_live_primary
 test_desk_voice_send_refuses_a_pane_not_hosting_the_primary

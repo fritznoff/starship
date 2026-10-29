@@ -30,7 +30,9 @@
 # even mid-turn, without that pane needing focus. The pane is resolved from
 # state/.lock: the lock's pid must be a live harness, the pane named by that
 # process's own environment (TMUX_PANE, or HERDR_ENV + HERDR_PANE_ID, with the
-# precedence bin/fm-supervisor-target-lib.sh owns) must exist, and the pane's
+# precedence bin/fm-supervisor-target-lib.sh owns) must exist. If process
+# routing is unavailable, that library's private startup hint may recover it
+# only for the same live PID/start identity and an empty composer. The pane's
 # root process must be that pid or one of its ancestors. The pane's composer
 # must also read empty or pending (bin/fm-backend.sh fm_backend_composer_state):
 # an unknown screen can be a modal dialog, a picker, or a dead shell, where
@@ -43,8 +45,9 @@
 # pid below can be added. When a Claude primary's box holds the captain's
 # unsent draft (pending), the message goes past it instead: see
 # send_past_draft below, which never submits, clears, or retypes the draft.
-# Another harness's draft is joined by the message and submitted with it. A
-# message of screenshots alone is the exception: it is typed only into a
+# On the original process-derived route, another harness's draft is joined
+# by the message and submitted with it. A message of screenshots alone is
+# the exception: it is typed only into a
 # composer that reads empty, and goes to the mailbox past any draft, because
 # a stray screenshot must never interrupt the captain's typing. The
 # text is sent as the captain's plain words: control characters, newlines, and
@@ -355,8 +358,9 @@ sys.stdout.write(" ".join(text.split()))
 
 # The pane keys from process <pid>'s own environment, one KEY=VALUE per line.
 # Linux exposes it in /proc; macOS ps -E prints argv then the environment, so
-# the last occurrence of a key wins. macOS withholds the environment of Apple
-# platform binaries, which no verified harness is.
+# the last occurrence of a key wins. Process-title rewriting can hide even a
+# non-platform binary's environment; primary_submit can recover an owner-bound
+# startup hint, but only for an empty composer.
 holder_pane_env() {  # <pid>
   local pid=$1
   if [ -r "/proc/$pid/environ" ]; then
@@ -726,6 +730,7 @@ shown_focused() {  # <backend> <target>
 # PRIMARY_SUBMIT_RING=1 submits it the way ring does. Its subshell scopes the pane environment and writer lock.
 primary_submit() (  # <line> [<app> <tty> | --focused]
   local lock="$STATE/.lock" pid envs kv backend target root verdict draft claude composer tries
+  local recovered=0 current_envs
   local writer_lock="$STATE/desk-voice/.send.lock"
   [ -f "$lock" ] && [ ! -L "$lock" ] || return 1
   pid=$(head -n 1 "$lock" 2>/dev/null) || return 1
@@ -734,16 +739,21 @@ primary_submit() (  # <line> [<app> <tty> | --focused]
   # Kept now: sourcing a backend resets the session-lock library's flag.
   claude=${FM_HARNESS_IS_CLAUDE:-0}
   envs=$(holder_pane_env "$pid")
-  [ -n "$envs" ] || return 1
-  unset FM_SUPERVISOR_TARGET FM_SUPERVISOR_BACKEND TMUX TMUX_PANE \
-    HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH
-  while IFS= read -r kv; do
-    [ -n "$kv" ] && export "${kv?}"
-  done <<EOF
+  while :; do
+    unset FM_SUPERVISOR_TARGET FM_SUPERVISOR_BACKEND TMUX TMUX_PANE \
+      HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH
+    while IFS= read -r kv; do
+      [ -n "$kv" ] && export "${kv?}"
+    done <<EOF
 $envs
 EOF
-  target=$(discover_supervisor_target) || return 1
-  backend=$(discover_supervisor_backend) || return 1
+    if target=$(discover_supervisor_target) && backend=$(discover_supervisor_backend); then
+      break
+    fi
+    [ "$recovered" = 0 ] || return 1
+    envs=$(fm_supervisor_read_primary_pane "$STATE" "$pid") || return 1
+    recovered=1
+  done
   fm_backend_target_exists "$backend" "$target" || return 1
   root=$(pane_root_pid "$backend" "$target") || return 1
   pid_within "$pid" "$root" || return 1
@@ -765,7 +775,16 @@ EOF
     pending) draft=1 ;;
     *) return 2 ;;
   esac
+  [ "$recovered" = 0 ] || [ "$composer" = empty ] || return 2
   ! shows_selection_dialog "$backend" "$target" || return 2
+  # Recheck after writer exclusion and all read-only UI probes, before typing.
+  if [ "$recovered" = 1 ]; then
+    current_envs=$(fm_supervisor_read_primary_pane "$STATE" "$pid") || return 1
+    [ "$current_envs" = "$envs" ] || return 1
+    fm_harness_holder_alive "$pid" || return 1
+    root=$(pane_root_pid "$backend" "$target") || return 1
+    pid_within "$pid" "$root" || return 1
+  fi
   if [ "${PRIMARY_SUBMIT_RING:-0}" = 1 ]; then
     ! shows_stash "$backend" "$target" || return 2
     verdict=$(submit_ring "$backend" "$target" "$1") || verdict=send-failed
