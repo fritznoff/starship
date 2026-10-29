@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# fm-triage-second-look.py - the TypeSafe (Jev) engine behind
+# fm-triage-second-look.py - the System One decision engine behind
 # bin/fm-triage-second-look.sh.
 #
 # It reads dropped status lines on stdin, asks Jev four narrow judgments about
-# every line in ONE request, applies the promotion rule in code, and prints the
+# every line in one logical request (provider-capped batches), applies the rule, and prints the
 # lines that should be promoted. The dropped line itself is the whole of what is
 # sent - see state_for. The opt-in gate, the home resolution and the hard time
 # bound are the bash entry point's; everything from request construction to the
@@ -25,17 +25,18 @@
 # a worker can write into a status line - can suppress an escalation Firstmate
 # would otherwise make. See docs/configuration.md "Status second look".
 #
-# The API key is read from the environment, else from the home's gitignored
-# .env, and never appears in argv, stdout, stderr or any state file. The reader
-# below is local on purpose, matching how each other optional capability in this
-# repository (Relay, Deepgram) reads its own one key without a shared dependency.
+# Provider credentials, transport and model-specific calibration are shared in
+# fm_decision_model.py; docs/configuration.md "Decision models" owns setup.
 import json
 import os
 import pathlib
 import re
 import sys
 import urllib.error
-import urllib.request
+
+# Also support loading this executable through importlib in verification tools.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from fm_decision_model import Client
 
 ENDPOINT = os.environ.get("FM_TRIAGE_SECOND_LOOK_ENDPOINT",
                           "https://api.typesafe.ai/v1/systemone")
@@ -141,33 +142,6 @@ def withheld(task, line, values):
         return True
     text = squash(line).lower()
     return any(value in text for value in values)
-
-
-def api_key(home):
-    """The key from the environment, else the one line of the home's .env.
-
-    Never returned to any caller that logs, never placed in argv.
-    """
-    key = os.environ.get("TYPESAFE_API_KEY", "").strip()
-    if key:
-        return key
-    env_file = pathlib.Path(os.environ.get("FM_TRIAGE_SECOND_LOOK_ENV_FILE")
-                            or (pathlib.Path(home) / ".env"))
-    try:
-        if env_file.is_symlink() or not env_file.is_file():
-            return ""
-        text = env_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    value = ""
-    for match in re.finditer(r"(?m)^(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*)$", text):
-        raw = match.group(1).strip()
-        if raw[:1] in "'\"" and raw[-1:] == raw[:1] and len(raw) >= 2:
-            raw = raw[1:-1]
-        elif " #" in raw:
-            raw = raw.split(" #", 1)[0].rstrip()
-        value = raw.strip()
-    return value
 
 
 def normalize(line):
@@ -317,12 +291,10 @@ def build_request(records):
     }
 
 
-def call(payload, key):
-    request = urllib.request.Request(
-        ENDPOINT, data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": "Bearer %s" % key, "Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+def call(payload, client):
+    return client.call(
+        payload, TIMEOUT_S, "triage-second-look", dict(PROMOTE_AT, urgency=ALERT_URGENCY,
+        confidence=ALERT_MIN_CONFIDENCE), endpoint=ENDPOINT)
 
 
 def noul_or_zero(answers, tag, name, unusable):
@@ -341,15 +313,16 @@ def noul_or_zero(answers, tag, name, unusable):
         return 0.0
 
 
-def decide(answers, tag):
+def decide(answers, tag, thresholds=None):
     """Apply the rule.
 
     Returns (tier, reason, unusable): tier is "silent" when nothing fired, and
     unusable names the answers that could not be read at all.
     """
+    thresholds = thresholds or dict(PROMOTE_AT, urgency=ALERT_URGENCY, confidence=ALERT_MIN_CONFIDENCE)
     unusable = []
     nouls = {name: noul_or_zero(answers, tag, name, unusable) for name in PROMOTE_AT}
-    fired = [name for name, at in PROMOTE_AT.items() if nouls[name] >= at]
+    fired = [name for name in PROMOTE_AT if name not in unusable and nouls[name] >= thresholds[name]]
     if not fired:
         return "silent", "", unusable
     tier = "digest"
@@ -357,7 +330,7 @@ def decide(answers, tag):
         score = answers["%s__urgency" % tag]
         urgency = float(score["score"])
         confidence = float(score.get("confidence", 0.0))
-        if urgency >= ALERT_URGENCY and confidence >= ALERT_MIN_CONFIDENCE:
+        if urgency >= thresholds["urgency"] and confidence >= thresholds["confidence"]:
             tier = "alert"
     except (KeyError, TypeError, ValueError):
         unusable.append("urgency")
@@ -392,11 +365,14 @@ def main():
             # stubbed.
             body = json.loads(pathlib.Path(canned).read_text(encoding="utf-8"))
         else:
-            key = api_key(HOME_ROOT)
-            if not key:
-                note("no TYPESAFE_API_KEY (inert; supervision behaves as it does without it)")
+            client = Client(HOME_ROOT, env_file=os.environ.get("FM_TRIAGE_SECOND_LOOK_ENV_FILE"))
+            if not client.key:
+                note("no TYPESAFE_API_KEY (inert; supervision behaves as it does without it)" if client.baseline
+                     else "no decision-model credential (inert; supervision behaves as it does without it)")
                 return 2
-            body = call(payload, key)
+            body = call(payload, client)
+        if body.get("_decision_advisory"):
+            return 0
         answers = body["answers"]
     except urllib.error.HTTPError as error:
         note("HTTP %s from the second look (promoting nothing)" % error.code)
@@ -407,7 +383,7 @@ def main():
 
     promoted = 0
     for tag, task, line in records:
-        tier, reason, unusable = decide(answers, tag)
+        tier, reason, unusable = decide(answers, tag, body.get("_decision_thresholds"))
         if unusable:
             # Never the line itself, only which answers could not be read.
             note("unusable answer(s) for one line, read as 0.0: %s" % "+".join(unusable))

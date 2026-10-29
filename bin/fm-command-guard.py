@@ -90,10 +90,10 @@
 # are Firstmate's own.
 #
 # Env:
-#   FM_COMMAND_GUARD_ENDPOINT   API endpoint (default the TypeSafe System One endpoint)
+#   FM_COMMAND_GUARD_ENDPOINT   TypeSafe endpoint override (same origin or loopback tests)
 #   FM_COMMAND_GUARD_TIMEOUT    single-part request bound in seconds (default 4)
 #   FM_COMMAND_GUARD_MULTIPART_TIMEOUT  multi-part request bound in seconds (default 6)
-#   FM_COMMAND_GUARD_ENV_FILE   .env holding TYPESAFE_API_KEY (default <home>/.env)
+#   FM_COMMAND_GUARD_ENV_FILE   .env holding provider credentials (default <home>/.env)
 #   TYPESAFE_API_KEY            wins over the .env; never logged, never in argv
 import fcntl
 import json
@@ -104,7 +104,10 @@ import signal
 import sys
 import time
 import urllib.error
-import urllib.request
+
+# Also support loading this executable through importlib in verification tools.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from fm_decision_model import Client
 
 ENDPOINT = os.environ.get("FM_COMMAND_GUARD_ENDPOINT",
                           "https://api.typesafe.ai/v1/systemone")
@@ -317,13 +320,6 @@ def env_file_values(home):
     return values
 
 
-def api_key(home):
-    key = os.environ.get("TYPESAFE_API_KEY", "").strip()
-    if key:
-        return key
-    return env_file_values(home).get("TYPESAFE_API_KEY", "")
-
-
 # ---- redaction --------------------------------------------------------------
 
 SECRET_NAME = re.compile(r"(?i)(key|token|secret|pass|pwd|credential|auth|cookie|session|private|signature|(?:^|_)pin(?:$|_))")
@@ -494,12 +490,10 @@ def build_request(parts):
     return {"model": MODEL, "state": state, "questions": asked}
 
 
-def call(payload, key, timeout):
-    request = urllib.request.Request(
-        ENDPOINT, data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": "Bearer %s" % key, "Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+def call(payload, client, timeout):
+    return client.call(payload, timeout, "command-guard", {
+        "injection": INJECTION_AT, "irreversible": IRREVERSIBLE_AT,
+        "destructive": DESTRUCTIVE_AT}, endpoint=ENDPOINT)
 
 
 # ---- rule -------------------------------------------------------------------
@@ -540,20 +534,21 @@ def _where(count, n):
     return " in part %d of %d" % (n, count) if count > 1 else ""
 
 
-def decide(answers, count):
+def decide(answers, count, thresholds=None):
     """(block, reason). Any one condition in any part blocks; the injection check comes first."""
+    thresholds = thresholds or {"injection": INJECTION_AT, "irreversible": IRREVERSIBLE_AT, "destructive": DESTRUCTIVE_AT}
     marks = list(enumerate(suffixes(count), 1))
     for n, s in marks:
-        if answers.get("injection" + s, 0.0) >= INJECTION_AT:
+        if "injection" + s in answers and answers["injection" + s] >= thresholds["injection"]:
             return True, ("text aimed at the reviewer (%.2f)%s: the command tries to steer how "
                           "it is judged" % (answers["injection" + s], _where(count, n)))
     for n, s in marks:
         if (answers.get("effect" + s) == "irreversible"
-                and answers.get("effect_confidence" + s, 0.0) >= IRREVERSIBLE_AT):
+                and answers.get("effect_confidence" + s, 0.0) >= thresholds["irreversible"]):
             return True, ("irreversible (%.2f)%s: nothing would restore what this removes, "
                           "overwrites or sends" % (answers["effect_confidence" + s], _where(count, n)))
     for n, s in marks:
-        if answers.get("destructive_intent" + s, 0.0) >= DESTRUCTIVE_AT:
+        if "destructive_intent" + s in answers and answers["destructive_intent" + s] >= thresholds["destructive"]:
             return True, ("destructive intent (%.2f)%s: this command aims to wipe something"
                           % (answers["destructive_intent" + s], _where(count, n)))
     summaries = []
@@ -569,17 +564,19 @@ def decide(answers, count):
     return False, "; ".join(summaries)
 
 
-def ask(parts, key):
+def ask(parts, client):
     """(outcome, reason, answers) for one request about these parts."""
     timeout = MULTIPART_TIMEOUT_S if len(parts) > 1 else TIMEOUT_S
     try:
-        body = call(build_request(parts), key, timeout)
+        body = call(build_request(parts), client, timeout)
     except urllib.error.HTTPError as error:
         return "error", "HTTP %s" % error.code, {}
     except Exception as error:  # noqa: BLE001 - every failure steps aside the same way
         return "error", type(error).__name__, {}
     answers, unusable = read_answers(body, len(parts))
-    block, reason = decide(answers, len(parts))
+    if isinstance(body, dict) and body.get("_decision_advisory"):
+        return "advisory", "uncalibrated decision model; scores recorded, not enforced", answers
+    block, reason = decide(answers, len(parts), body.get("_decision_thresholds") if isinstance(body, dict) else None)
     if block:
         return "block", reason, answers
     if unusable:
@@ -595,16 +592,16 @@ def judge(command, home):
     if len(parts) > MAX_PARTS:
         return "skip", ("not judged: %d characters need %d parts, over the cap of %d"
                         % (len(sent), len(parts), MAX_PARTS)), {}, sent, "none"
-    key = api_key(home)
-    if not key:
-        return "error", "no TYPESAFE_API_KEY", {}, sent, "none"
-    outcome, reason, answers = ask(parts, key)
+    client = Client(home, env_file=os.environ.get("FM_COMMAND_GUARD_ENV_FILE"))
+    if not client.key:
+        return "error", ("no TYPESAFE_API_KEY" if client.baseline else "no decision-model credential"), {}, sent, "none"
+    outcome, reason, answers = ask(parts, client)
     if len(parts) == 1:
         return outcome, reason, answers, sent, "whole"
     if outcome != "error":
         return outcome, reason, answers, sent, "parts"
     failed = reason
-    outcome, reason, answers = ask([head_and_tail(sent)], key)
+    outcome, reason, answers = ask([head_and_tail(sent)], client)
     if outcome == "error":
         reason = "parts: %s; head-and-tail: %s" % (failed, reason)
     else:

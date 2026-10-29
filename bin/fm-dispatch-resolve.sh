@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # fm-dispatch-resolve.sh - resolve one concrete crewmate or scout dispatch
-# profile from a task brief with typesafe.ai's System One model (Jev), opt-in.
+# profile from a task brief with the shared System One client, opt-in (Jev default).
 #
 # Usage:
 #   fm-dispatch-resolve.sh <brief-file> [--project <name>]
 #
-# Opt-in gate: TYPESAFE_API_KEY non-empty in this process environment, else a
-#   TYPESAFE_API_KEY= line in $FM_HOME/.env read with fmx_env_get, the same
-#   accessor as FMX_PAIRING_TOKEN (bin/fm-env-lib.sh). The environment wins.
+# Opt-in gate: the selected provider credential in the environment or .env.
+#   docs/configuration.md "Decision models" owns selection and calibration.
+#   The default key retains the fmx_env_get parsing rule. The environment wins.
 #   Absent in both: one "dispatch-resolve: off" line on stderr, nothing on
 #   stdout, exit 0, no network call, so firstmate dispatches exactly as today.
 #   The key lives in one shell variable and reaches curl as a header read from
@@ -86,17 +86,15 @@
 #   actionable, never selected around.
 #
 # Environment:
-#   TYPESAFE_API_KEY is the only resolver-specific environment setting.
+#   Provider configuration and keys: docs/configuration.md "Decision models".
 #
 # Authority: this tool never replaces firstmate's judgment, quota-array-dispatch,
 #   the captain-approval gate, or fm-spawn.sh validation; it publishes one
 #   inspectable answer plus every candidate's evidence, in code.
 set -u
 
-TYPESAFE_API_KEY_PRIVATE=${TYPESAFE_API_KEY:-}
-export -n TYPESAFE_API_KEY_PRIVATE 2>/dev/null || true
-unset TYPESAFE_API_KEY
-
+# shellcheck source=bin/fm-decision-model-lib.sh
+. "${BASH_SOURCE[0]%/*}/fm-decision-model-lib.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
@@ -118,7 +116,6 @@ CONFIDENCE_FLOOR=0.6
 # version, and an alias can move underneath the rule floors too.
 TS_MODEL=jev-1.13.0
 SCOPE_FLOOR=0.5
-TS_BASE=https://api.typesafe.ai
 TS_TIMEOUT=5
 DEFAULT_WHEN="No listed rule applies to this task."
 # The same always-excluded projects as ALWAYS_EXCLUDED in bin/fm-command-guard.py.
@@ -149,11 +146,12 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- opt-in gate ---------------------------------------------------------------
-if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
-  TYPESAFE_API_KEY_PRIVATE=$(fmx_env_get TYPESAFE_API_KEY "$FM_HOME/.env")
-fi
-if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
-  echo "dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and $FM_HOME/.env)" >&2
+if ! fm_decision_model --enabled; then
+  if [ ! -e "$CONFIG/decision-model.json" ]; then
+    echo "dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and $FM_HOME/.env)" >&2
+  else
+    echo "dispatch-resolve: off (selected provider credential absent or configuration unavailable)" >&2
+  fi
   exit 0
 fi
 
@@ -379,13 +377,10 @@ command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
     }')
   never_send_check
   T0=$(fm_timing_now_ms)
-  HTTP=$(printf '%s' "$REQUEST" | curl -sS --max-time "$TS_TIMEOUT" -o "$RESP_FILE" -w '%{http_code}' \
-    -X POST "$TS_BASE/v1/systemone" -H 'Content-Type: application/json' \
-    -H @/dev/fd/3 3< <(printf 'Authorization: Bearer %s\n' "$TYPESAFE_API_KEY_PRIVATE") \
-    --data-binary @- 2>/dev/null) || HTTP=000
+  HTTP=$(printf '%s' "$REQUEST" | fm_decision_model --output "$RESP_FILE" --timeout "$TS_TIMEOUT") || HTTP=000
   T1=$(fm_timing_now_ms)
   LAT_MS=$(( T1 - T0 ))
-  [ "$HTTP" = 200 ] || emit_error "http $HTTP after ${LAT_MS} ms: $(head -c 200 "$RESP_FILE" 2>/dev/null | tr '\n' ' ')"
+  [ "$HTTP" = 200 ] || emit_error "http $HTTP after ${LAT_MS} ms: decision-model request failed"
 jq -e --slurpfile rules "$RULES" '
     (($rules[0].rules | to_entries | map("rule_" + ((.key + 1) | tostring))) + ["default"] | sort) as $choices |
     (.answers.rule.choice | type) == "string" and
@@ -400,6 +395,14 @@ jq -e --slurpfile rules "$RULES" '
        (.usage.input_tokens | type) == "number" and
        (.usage.output_tokens | type) == "number"))' \
   "$RESP_FILE" >/dev/null 2>&1 || emit_error "response is not a rule Choice answer"
+
+# Uncalibrated models only collect scores: no automatic routing or scope advice.
+if jq -e '._decision_advisory == true' "$RESP_FILE" >/dev/null; then
+  printf 'dispatch-resolve:\n  status: escalate\n  reason: uncalibrated decision model; advisory scores recorded, use ordinary dispatch\n'
+  exit 0
+fi
+CONFIDENCE_FLOOR=$(jq -r '._decision_thresholds.confidence // 0.6' "$RESP_FILE")
+SCOPE_FLOOR=$(jq -r '._decision_thresholds.scope // 0.5' "$RESP_FILE")
 
 # ---- scope advice: printed at the floor, never an input to the outcome -----------
 SCOPE_LINE=''
@@ -522,7 +525,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
       ($c | ltrimstr("rule_") | tonumber) as $n |
       if $n <= (($cfg.rules // []) | length) then $cfg.rules[$n - 1] else null end
     else null end;
-  def declared_confidence($c): rule_at($c) as $x | $x != null and ($x | has("min_confidence"));
+  def declared_confidence($c): rule_at($c) as $x | ($r | has("_decision_thresholds") | not) and $x != null and ($x | has("min_confidence"));
   def confidence_floor($c): if declared_confidence($c) then rule_at($c).min_confidence else ($floor | tonumber) end;
   ($a.choice) as $picked |
   (confidence_floor($picked)) as $picked_floor |

@@ -817,10 +817,10 @@ Most scans carry zero or one new dropped line.
 
 Configuration is `key = value` lines and the only key is `enabled`.
 Unlike `config/speak`, a malformed gate file reports on stderr and leaves this home inert rather than exiting loudly, because the caller is a supervision loop and a config typo must never change what that loop does.
-`TYPESAFE_API_KEY` is read from the environment, else from this home's gitignored `.env`, and never appears in argv, stdout, stderr or any state file.
+The selected [decision-model credential](#decision-models-configdecision-modeljson) is never placed in argv, output, or state records.
 The dropped status line itself is the whole of what leaves this machine: the task's brief, its worker kind and its earlier status lines are never sent, so arming this gate does not ship a brief's client names, hostnames or unreleased plans to a third party.
 A line from a task whose recorded project is `happiness-compass`, or one carrying a value from the [never-send list](#typed-dispatch-resolution-env-typesafe_api_key), is left out before the request is built and is never promoted; a list that is present but unreadable withholds the whole scan.
-The model is pinned to an exact version rather than an alias because the thresholds were tuned against that version.
+The default model is pinned to an exact version rather than an alias because its thresholds were tuned against that version; alternate [decision models](#decision-models-configdecision-modeljson) require their own calibration.
 [`../bin/fm-triage-second-look.sh`](../bin/fm-triage-second-look.sh)'s header and `--help` own the exact invocation, the environment overrides and the exit codes, and its engine owns the request shape, the four questions, the batch bound, the thresholds and the tier rule.
 The tool reads its batch on stdin as `<task-id>` TAB `<status line>` records, one per line, so feed it one to read the exact request a scan would send:
 `printf 'my-task\tworking: the backfill migration truncated public.users\n' | bin/fm-triage-second-look.sh --dry-run`.
@@ -874,7 +874,7 @@ Plain values such as paths, `env=prod` or `of=/dev/disk2` stay visible, so the j
 A single-part request is bounded at 4 seconds (`FM_COMMAND_GUARD_TIMEOUT`) and a multi-part one at 6 seconds (`FM_COMMAND_GUARD_MULTIPART_TIMEOUT`), and the whole hook at the sum of both plus 3 seconds.
 A block is emitted before any logging, which then gets at most one more second, so a failure or timeout while logging never turns a block into an allow.
 The first failure of an episode is written once to `state/command-guard.log` and to stderr, and the next good answer ends the episode.
-`TYPESAFE_API_KEY` is read from the environment, else from this home's `.env`, and never appears in argv, output or the log.
+The selected [decision-model credential](#decision-models-configdecision-modeljson) never appears in argv, output or the log.
 
 **One signal among several.** The guard judges the whole command, heredoc bodies and redirections included, up to the 8-part cap, because the design it borrows from saw an agent route around a write-only file gate by writing the same file through a shell heredoc.
 Known limit: only the Bash tool is judged, so a script written with the Write or Edit tool and then run as `bash x.sh` is judged only by that short command, not by the script's contents.
@@ -1737,10 +1737,128 @@ Extra-high effort is deliberately absent, because a Pro or Max 5x window runs ou
 
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Decision models (config/decision-model.json)
+
+The four System One callers (dispatch resolution, test failure cause, status second look, and the remote command guard) share `bin/fm_decision_model.py`, with `bin/fm-decision-model-lib.sh` as the shell entry.
+With no configuration they retain the TypeSafe endpoint, `jev-1.13.0` requests, thresholds, and credential selection.
+Optional home-local `config/decision-model.json` selects a provider; `FM_CONFIG_OVERRIDE` selects its directory like other home configuration.
+Do not put credentials in this JSON.
+
+| `provider` | Default model | Credential | Endpoint |
+|---|---|---|---|
+| `typesafe` (default) | `jev-1.13.0` | `TYPESAFE_API_KEY` | `https://api.typesafe.ai/v1/systemone` |
+| `workers-ai` | `clef-flash` | `CLOUDFLARE_API_KEY`, plus `CLOUDFLARE_ACCOUNT_ID` | `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>` |
+| `openrouter` | `typesafe/jev-1.13` | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1/systemone` |
+
+Credentials and the account id come from the process environment, else literal assignments in this home's gitignored `.env`; the environment wins.
+Cloudflare requires its 32-character account id, and Workers AI model names here are basenames such as `clef-flash`, not Pi's `@cf/cloudflare/clef-flash` id.
+Each credential is used only for its selected provider and origin, never substituted into `TYPESAFE_API_KEY` or sent to another provider.
+Redirects are refused, and HTTP failures never trigger a provider fallback.
+The existing per-caller endpoint overrides apply only to TypeSafe and must preserve its origin (loopback HTTP remains available for stub tests).
+The command guard and status second look still require their existing independent opt-in files and retain project exclusions and privacy filters.
+Dispatch and test-failure labeling require the selected provider's credential, not specifically a TypeSafe key.
+
+For an advisory-only Clef trial, the entire selection file is:
+
+```json
+{
+  "provider": "workers-ai",
+  "providers": { "workers-ai": { "model": "clef-flash" } }
+}
+```
+
+The client unwraps Workers AI's `{ "success": true, "result": { "answers": {} } }` envelope.
+Clef requests, including Clef through OpenRouter, are split at 64 questions and merged by question id; every batch retains the full original state so peer context is not lost.
+A 100-question status scan therefore uses two requests, not 100 separate judgments, within the original caller's total request-time budget.
+A failed or incomplete batch yields no combined decision.
+TypeSafe has no question-count split; unknown gateway models have no assumed question cap.
+Splitting questions does not shorten the state or guarantee it fits a model's context window: Clef-flash's hosted window is 24,576 tokens, and an oversized request is an ordinary unavailable judgment rather than silently truncated evidence.
+
+### Model-specific thresholds and advisory scores
+
+The shipped thresholds are calibrated only for direct TypeSafe `jev-1.13.0`.
+Other provider/model pairs warn that they are uncalibrated and, without an explicit complete threshold set for that call site, only save scores: dispatch returns `escalate` without a profile, status second look emits no promotions, test failure cause emits no labels, and the remote command guard never denies a command.
+The command guard's independent local database deny list is unchanged and remains enforced.
+No existing deterministic dispatch or supervision decision is suppressed.
+
+Threshold sets live at `providers.<provider>.thresholds.<exact-model-id>.<site>` in the selection file, keyed by exact model so a model change cannot inherit another model's thresholds.
+Only the selected provider/model entry is read.
+All values must be finite numbers from 0 to 1, except `urgency`, whose range is 0 to 2.
+Every named field for a site is required; malformed sets stop that judgment instead of borrowing Jev's values.
+
+| Site | Required threshold fields |
+|---|---|
+| `dispatch` | `confidence`, `scope` |
+| `test-failure-cause` | `confidence` |
+| `triage-second-look` | `needs_captain`, `adverse_event`, `understated_terminal`, `urgency`, `confidence` |
+| `command-guard` | `injection`, `irreversible`, `destructive` |
+
+For example, after measuring a model, put the measured failure-cause floor under `providers.workers-ai.thresholds["clef-flash"]["test-failure-cause"].confidence`.
+Supplying thresholds authorizes that site's existing decision policy; it is an operator assertion of calibration, not a calibration guarantee.
+On alternate provider/models, dispatch uses the configured confidence threshold rather than the rules' Jev-specific `min_confidence` values.
+The direct Jev defaults and per-rule behavior remain unchanged.
+
+Nonbaseline calls append best-effort private `state/decision-model-scores.jsonl` records with provider, exact model, site, time, thresholds, advisory flag, numeric scores, and valid choice labels/probabilities, never state, commands, logs, instructions, or keys.
+The directory must already exist; an unwritable log does not change the caller's established failure policy.
+These local scores are evaluation evidence, not human labels; pair them with your own labeled examples and keep them private.
+The log is append-only; archive or clear it locally when no longer needed.
+
+Tune each model and failure mode on your own saved scores, with minimum acceptable precision and recall chosen first.
+Choose thresholds on training splits and measure held-out precision, recall, and F1 (for example stratified five-fold cross-validation), comparing against 0.50 without assuming it is correct.
+If no threshold meets the minimums, retain advisory-only mode rather than lowering the requirements.
+Check probability calibration separately; Platt scaling fitted on training log-odds can help, but must improve held-out calibration (such as Brier score) before use.
+This client applies thresholds to raw scores and does not implement a learned calibration transform.
+[Hamel Husain's decision-model evaluation](https://hamel.dev/blog/posts/decision-model-evals) illustrates why thresholds do not transfer: Clef Flash missed that study's precision/recall target and one bin predicted about 8% versus 60% observed failures, while Jev was already well calibrated on that dataset, not necessarily yours.
+Retune after changing a model or prompt; saved scores can be evaluated without new paid inference.
+`tests/fm-decision-model.test.sh` covers stubbed provider transport, batching, credential isolation, default compatibility, and advisory enforcement.
+
+### Pi workers: native Clef classifier access
+
+Pi's built-in `cloudflare-workers-ai` classifier provider is separate from Starship's shared client; no extension or chat-model replacement is needed.
+For Pi versions with that built-in catalog and codemode, add these exact **names**, not values, to the existing `config/launch-env-allowlist`, preserving other entries your worker needs:
+
+```text
+CLOUDFLARE_API_KEY
+CLOUDFLARE_ACCOUNT_ID
+```
+
+In the worker's Pi `settings.json`, retain other tool selections and enable codemode if it is not already enabled:
+
+```json
+{ "defaultTools": ["+codemode"] }
+```
+
+The credential and account id must already exist in the destination launch environment; a name in the allowlist neither provisions a secret nor transfers it from Firstmate's `.env`.
+See [Worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), including its Orca environment source when applicable.
+This setup documents access only: it stores no keys, enables nothing automatically, and does not reconfigure Pi interactive-shell's separate TypeSafe semantic observation features.
+A worker can use this codemode script with public evaluation data:
+
+```javascript
+const model = await models.getModelOfType(
+  "classifier", "cloudflare-workers-ai", "@cf/cloudflare/clef-flash"
+);
+if (!model) throw new Error("Clef-flash classifier is not in this Pi catalog");
+const result = await models.classify(model, {
+  state: { message: "Temporary directory is not writable" },
+  questions: {
+    environment: {
+      type: "bool",
+      instructions: "Does the message describe an environment failure?",
+      criteria: { true: "Host or permissions problem", false: "Not an environment failure" }
+    }
+  }
+});
+if (result.stopReason !== "stop") return { error: result.errorMessage };
+return { answers: result.answers, usage: result.usage };
+```
+
+Pi normalizes System One Noul answers to `bool` answers with a `probability` field.
+Access to a classifier does not authorize acting on its scores; evaluate and calibrate it for the intended use first.
+
 ## Typed dispatch resolution (.env TYPESAFE_API_KEY)
 
-`bin/fm-dispatch-resolve.sh` resolves one concrete crewmate or scout profile from a written brief with typesafe.ai's System One model (Jev), so the rule match that firstmate otherwise reasons out in its own context becomes one short tool turn.
-It is off unless `TYPESAFE_API_KEY` is non-empty in the calling environment or the home's gitignored `.env` holds a `TYPESAFE_API_KEY=` line; the environment wins, matching the Relay and mail-plane contracts, and the Relay accessor in `bin/fm-env-lib.sh` reads the line.
+`bin/fm-dispatch-resolve.sh` resolves one concrete crewmate or scout profile from a written brief with a System One decision model (Jev by default), so the rule match that firstmate otherwise reasons out in its own context becomes one short tool turn.
+It is off without the selected provider's credential; [Decision models](#decision-models-configdecision-modeljson) owns provider selection, keys, and model-specific calibration.
 
 Off means one `dispatch-resolve: off` line on stderr, nothing on stdout, exit 0, and no network call, so firstmate dispatches exactly as it does without the tool.
 This section is the single owner of the tool's operator contract; the script header owns its exact flags and output lines, and "Crew dispatch profiles" above owns the declared rule and profile fields it applies.
@@ -1858,19 +1976,20 @@ Writing is best effort: a home without `state/` or a failed write leaves the pri
 The file is append-only and local; empty it with `: > state/dispatch-decisions.jsonl` to clear the history.
 The script header owns the exact line format.
 
-**Key handling and fixed settings**
+**Key handling and defaults**
 
-- The resolver and bootstrap copy an environment-provided key into a non-exported private variable and unset `TYPESAFE_API_KEY` before launching child processes, so the secret is absent from child environments.
-- The resolver sends the key to `curl` only as a header read from a file descriptor, never on argv, and nothing prints, logs, or writes it.
-- The resolver fixes the endpoint at `https://api.typesafe.ai`, model pinned at `jev-1.13.0` (never an alias, because the floors were measured against that version), default confidence floor at 0.6, scope advice floor at 0.5, and request timeout at 5 seconds; `TYPESAFE_API_KEY` is its only resolver-specific environment setting.
+The resolver and bootstrap keep the legacy TypeSafe key in a non-exported private variable and clear its exported name before launching other children.
+Other ambient provider keys retain their existing inheritance; the client strips all three provider keys from curl's environment.
+The shared client's shell entry receives them through a descriptor and sends only the selected credential to curl through a header descriptor, never argv or its environment.
+[Decision models](#decision-models-configdecision-modeljson) owns endpoints and provider/model defaults; the resolver's original Jev confidence floor is 0.6, scope-advice floor 0.5, and request timeout 5 seconds.
 
 The live rule-match evidence is recorded in [`verification/dispatch-resolve.md`](verification/dispatch-resolve.md).
 
 ## Test failure cause (.env TYPESAFE_API_KEY)
 
-When a `bin/fm-test-run.sh` run ends with failures, the runner asks typesafe.ai's Jev model in one request why each failing script failed and prints an advisory `FM_TEST_FAILURE_CAUSE` line per failure: `code-bug`, `test-out-of-date`, `environment`, or `unclear` when the model's confidence is under 0.6.
+When a `bin/fm-test-run.sh` run ends with failures, the runner asks the selected decision model (TypeSafe Jev by default) why each failing script failed and, with thresholds configured, prints an advisory `FM_TEST_FAILURE_CAUSE` line per failure: `code-bug`, `test-out-of-date`, `environment`, or `unclear` when the model's confidence is under 0.6.
 The labels are hints for whoever reads the failure and never change the run's exit status.
-The same key turns it on: `TYPESAFE_API_KEY` from the environment, else from `$FM_HOME/.env`, where the runner defaults `FM_HOME` to its own repository root, so a run in a disposable task copy with neither stays silent.
+The selected [decision-model credential](#decision-models-configdecision-modeljson) turns it on, where the runner defaults `FM_HOME` to its own repository root, so a run in a disposable task copy with neither stays silent.
 With no key, no `python3`, a timeout, or an answer it cannot read, it prints nothing at all and the run reads exactly as it does without it.
 CI holds no key, so it only ever runs locally.
 

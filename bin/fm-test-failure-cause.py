@@ -61,7 +61,10 @@ import re
 import subprocess
 import sys
 import urllib.error
-import urllib.request
+
+# Also support loading this executable through importlib in verification tools.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from fm_decision_model import Client
 
 ENDPOINT = os.environ.get("FM_TEST_FAILURE_CAUSE_ENDPOINT",
                           "https://api.typesafe.ai/v1/systemone")
@@ -113,36 +116,6 @@ TIMEOUT_S = _bounded("FM_TEST_FAILURE_CAUSE_TIMEOUT", 15.0, float, 0.1)
 
 def note(message):
     sys.stderr.write("fm-test-failure-cause: %s\n" % message)
-
-
-def api_key(home):
-    """The key from the environment, else the one line of the home's .env.
-
-    The same reading as bin/fm-triage-second-look.py's api_key, kept local for
-    the same reason that one is: each optional capability reads its own key
-    without a shared dependency.
-    """
-    key = os.environ.get("TYPESAFE_API_KEY", "").strip()
-    if key:
-        return key
-    if not home:
-        return ""
-    env_file = pathlib.Path(home) / ".env"
-    try:
-        if env_file.is_symlink() or not env_file.is_file():
-            return ""
-        text = env_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    value = ""
-    for match in re.finditer(r"(?m)^(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*)$", text):
-        raw = match.group(1).strip()
-        if raw[:1] in "'\"" and raw[-1:] == raw[:1] and len(raw) >= 2:
-            raw = raw[1:-1]
-        elif " #" in raw:
-            raw = raw.split(" #", 1)[0].rstrip()
-        value = raw.strip()
-    return value
 
 
 def output_tail(path):
@@ -287,15 +260,12 @@ def redact(value, key):
     return value
 
 
-def call(payload, key):
-    request = urllib.request.Request(
-        ENDPOINT, data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": "Bearer %s" % key, "Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+def call(payload, client):
+    return client.call(
+        payload, TIMEOUT_S, "test-failure-cause", {"confidence": CONFIDENCE_FLOOR}, endpoint=ENDPOINT)
 
 
-def label(answers, tag):
+def label(answers, tag, floor=CONFIDENCE_FLOOR):
     """(cause, confidence) for one failure, or None when its answer is unreadable."""
     try:
         answer = answers["%s__cause" % tag]
@@ -311,7 +281,7 @@ def label(answers, tag):
         return None
     if not 0.0 <= confidence <= 1.0:
         return None
-    cause = CAUSES[choice] if confidence >= CONFIDENCE_FLOOR else "unclear"
+    cause = CAUSES[choice] if confidence >= floor else "unclear"
     return cause, confidence
 
 
@@ -342,9 +312,10 @@ def main():
     records, over_limit = fit_failures(failures)
 
     canned = os.environ.get("FM_TEST_FAILURE_CAUSE_RESPONSE")
-    key = "" if canned else api_key(os.environ.get("FM_HOME", root))
+    client = None if canned else Client(os.environ.get("FM_HOME", root))
+    key = client.key if client else ""
     if not (dry_run or canned or key):
-        note("no TYPESAFE_API_KEY (inert)")
+        note("no TYPESAFE_API_KEY (inert)" if client.baseline else "no decision-model credential (inert)")
         return 2
 
     try:
@@ -362,7 +333,10 @@ def main():
         if canned:
             body = json.loads(pathlib.Path(canned).read_text(encoding="utf-8"))
         else:
-            body = call(payload, key)
+            body = call(payload, client)
+        if body.get("_decision_advisory"):
+            return 0
+        floor = body.get("_decision_thresholds", {"confidence": CONFIDENCE_FLOOR})["confidence"]
         answers = body["answers"]
     except urllib.error.HTTPError as error:
         note("HTTP %s (labelling nothing)" % error.code)
@@ -372,7 +346,7 @@ def main():
         return 2
 
     for tag, script, _tail in records:
-        result = label(answers, tag)
+        result = label(answers, tag, floor)
         if result is None:
             note("unreadable answer for one failure; no label")
             continue
