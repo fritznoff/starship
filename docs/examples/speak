@@ -7,9 +7,7 @@
 enabled = true
 
 # The spoken register owner: an executable exposing `--dry-run <text>`, as an
-# absolute path or one relative to this home. Without one, the home's
-# projects/starship-voice (else projects/glasses-voice) clone's bin/announce is
-# used when present; with none of these nothing is spoken.
+# absolute path or one relative to this home. Nothing is spoken without one.
 # It reads its spoken budget from the GLASSES_ANNOUNCE_CONFIG file fm-speak
 # points it at (docs/examples/desk-speak-register.toml); an owner that ignores
 # that variable uses its own budget.

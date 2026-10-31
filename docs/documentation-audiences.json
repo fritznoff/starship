@@ -411,10 +411,6 @@
       "audience": "maintainer-architecture"
     },
     {
-      "path": "docs/baby-menu-quota-widget.md",
-      "audience": "operator-current"
-    },
-    {
       "path": "docs/bridge-view.md",
       "audience": "operator-current"
     },

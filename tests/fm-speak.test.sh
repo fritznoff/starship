@@ -402,39 +402,6 @@ test_the_configured_register_owner_shapes_the_line() {
   pass "fm-speak: config/speak shaper names the register owner"
 }
 
-# With neither FM_SPEAK_SHAPER nor a configured `shaper`, a home armed before
-# the key existed keeps speaking through its voice project clone: starship-voice
-# when it is there and the retiring glasses-voice otherwise.
-test_the_fallback_register_owner_prefers_starship_voice() {
-  local home out code
-  home=$(new_home default-starship "enabled = true")
-  install_speaker "$home" >/dev/null
-  install_named_shaper "$home/projects/glasses-voice/bin/announce" glasses-voice
-  install_named_shaper "$home/projects/starship-voice/bin/announce" starship-voice
-
-  out=$(speak_config_shaper "$home" --dry-run "The fix is green.") && code=0 || code=$?
-  expect_code 0 "$code" "the starship-voice owner shapes the line"
-  assert_contains "$out" "starship-voice: The fix is green." "the starship-voice clone wins when both are present"
-  assert_not_contains "$out" "glasses-voice:" "the retiring clone must not shape the line"
-
-  home=$(new_home default-glasses "enabled = true")
-  install_speaker "$home" >/dev/null
-  install_named_shaper "$home/projects/glasses-voice/bin/announce" glasses-voice
-  out=$(speak_config_shaper "$home" --dry-run "The fix is green.") && code=0 || code=$?
-  expect_code 0 "$code" "the glasses-voice owner shapes the line"
-  assert_contains "$out" "glasses-voice: The fix is green." "the retiring clone is the fallback"
-
-  home=$(new_home configured-over-clone "enabled = true" "shaper = owner/bin/announce")
-  install_speaker "$home" >/dev/null
-  install_named_shaper "$home/owner/bin/announce" configured
-  install_named_shaper "$home/projects/starship-voice/bin/announce" starship-voice
-  out=$(speak_config_shaper "$home" --dry-run "The fix is green.") && code=0 || code=$?
-  expect_code 0 "$code" "the configured owner shapes the line"
-  assert_contains "$out" "configured: The fix is green." "a configured shaper wins over the clone fallback"
-  assert_contains "$(speak_config_shaper "$home" --available)" "available" "--available resolves the configured owner"
-  pass "fm-speak: with no shaper named, the voice project clone is the fallback owner"
-}
-
 test_no_register_owner_is_refused_and_nothing_is_spoken() {
   local home out code
   home=$(new_home no-shaper "enabled = true")
@@ -1019,24 +986,23 @@ test_an_unusable_state_directory_is_refused_before_anything_is_shaped() {
 }
 
 # Availability uses the speech path's resolution, without opting in or executing
-# the private owner. A newer non-executable clone still shadows the old clone.
+# the private owner, and reads no config key but `shaper`.
 test_available_probes_the_resolved_owner_without_running_it() {
   local home out
   home=$(new_home available 'invalid config')
   probe_available() {
     FM_HOME="$home" FM_SPEAK_SHAPER="${1:-}" "$SPEAK" --available
   }
-  assert_equals unavailable "$(probe_available)" "no add-on must be unavailable"
-  mkdir -p "$home/projects/glasses-voice/bin" "$home/projects/starship-voice/bin"
-  printf '#!/bin/sh\nexit 99\n' > "$home/projects/glasses-voice/bin/announce"
-  chmod +x "$home/projects/glasses-voice/bin/announce"
-  assert_equals available "$(probe_available)" "legacy executable must be available without running it"
-  touch "$home/projects/starship-voice/bin/announce"
-  assert_equals unavailable "$(probe_available)" "a non-executable newer owner must shadow the legacy owner"
-  chmod +x "$home/projects/starship-voice/bin/announce"
-  assert_equals available "$(probe_available)" "newer executable must be available"
+  assert_equals unavailable "$(probe_available)" "no named owner must be unavailable"
+  printf 'shaper = owner/bin/announce\n' >> "$home/config/speak"
+  mkdir -p "$home/owner/bin"
+  touch "$home/owner/bin/announce"
+  assert_equals unavailable "$(probe_available)" "a non-executable configured owner must be unavailable"
+  printf '#!/bin/sh\nexit 99\n' > "$home/owner/bin/announce"
+  chmod +x "$home/owner/bin/announce"
+  assert_equals available "$(probe_available)" "configured executable must be available without running it"
   assert_equals unavailable "$(probe_available "$home/missing")" "explicit missing owner must win"
-  assert_equals available "$(probe_available "$home/projects/glasses-voice/bin/announce")" "explicit executable must win"
+  assert_equals available "$(probe_available "$home/owner/bin/announce")" "explicit executable must win"
   out=$(probe_available)
   [ ! -e "$home/state" ] || fail "the probe must not create state"
   assert_equals available "$out" "invalid speech config must not affect availability"
@@ -1549,7 +1515,6 @@ test_a_line_that_is_only_a_link_is_not_spoken
 test_the_speaker_receives_the_stripped_line_not_the_raw_one
 test_dry_run_never_reaches_the_speaker
 test_the_configured_register_owner_shapes_the_line
-test_the_fallback_register_owner_prefers_starship_voice
 test_no_register_owner_is_refused_and_nothing_is_spoken
 test_an_explicit_register_owner_wins_over_the_configured_one
 test_the_caller_is_never_held_open_by_audio_still_playing

@@ -47,11 +47,8 @@
 #             `--dry-run <text>` contract, as an absolute path or one relative
 #             to this home, that reads its spoken budget from the
 #             GLASSES_ANNOUNCE_CONFIG file set below (DESK SPOKEN BOUND); an
-#             owner that ignores it uses its own budget. FM_SPEAK_SHAPER wins
-#             over it; without either, the starship-voice clone's
-#             projects/starship-voice/bin/announce is used when it exists, else
-#             the retiring projects/glasses-voice/bin/announce, and with none of
-#             these nothing is spoken
+#             owner that ignores it uses its own budget. Required to speak;
+#             FM_SPEAK_SHAPER wins over it
 #
 # SPEAKER PREFERENCE: naming a voice picks the speaker, because only one of them
 # can honour it. With a non-empty `voice` in config/speak the shaped line goes to
@@ -159,7 +156,8 @@
 #             and the session-start digest prints the spoken-lead reply rules
 #             (docs/desk-voice-replies.md), only when it prints `enabled`.
 #   --available prints `available` if the resolved register owner is executable,
-#             or `unavailable` otherwise, without invoking it or reading config.
+#             or `unavailable` otherwise, without invoking it or reading any
+#             config key but `shaper`.
 #   --volume [<percent>]
 #             prints, or with a whole number from 0 to 200 sets, the spoken
 #             voice's level as a percentage of the Mac's own output volume: 100
@@ -193,8 +191,7 @@
 #
 # Environment overrides, for tests and unusual layouts:
 #   FM_SPEAK_SHAPER    register owner exposing the `--dry-run <text>` contract
-#                      (default: the `shaper` key in config/speak, else the
-#                      starship-voice or glasses-voice clone's announce)
+#                      (default: the `shaper` key in config/speak)
 #   FM_SPEAK_SAY       speech binary (default: /usr/bin/say)
 #   FM_SPEAK_DEEPGRAM_TTS
 #                      Deepgram TTS helper (default: $ROOT/bin/fm-deepgram-tts.sh)
@@ -254,7 +251,7 @@ DEFAULT_SHAPER_TIMEOUT=15
 DEFAULT_SPEAKER_TIMEOUT=60
 
 # Resolved after the config is read by resolve_shaper: FM_SPEAK_SHAPER, else
-# config/speak `shaper`, else the voice project clone this home already has.
+# config/speak `shaper`.
 SHAPER="${FM_SPEAK_SHAPER:-}"
 SAY_BIN="${FM_SPEAK_SAY:-/usr/bin/say}"
 DEEPGRAM_TTS="${FM_SPEAK_DEEPGRAM_TTS:-$ROOT/bin/fm-deepgram-tts.sh}"
@@ -347,25 +344,15 @@ peek_config_shaper() {
   done < "$CONFIG_FILE"
 }
 
-# Sets SHAPER from config/speak `shaper` when FM_SPEAK_SHAPER did not, falling
-# back to the voice project clone (projects/starship-voice, else the retiring
-# projects/glasses-voice) so a home armed before the key existed keeps
-# speaking. Returns 1 when no owner is named or present. Call after load_config or
+# Sets SHAPER from config/speak `shaper` when FM_SPEAK_SHAPER did not.
+# Returns 1 when no owner is named. Call after load_config or
 # peek_config_shaper.
 resolve_shaper() {
   [ -z "$SHAPER" ] || return 0
   case "$CFG_SHAPER" in
+    '') return 1 ;;
     /*) SHAPER=$CFG_SHAPER ;;
-    ?*) SHAPER="$FM_HOME/$CFG_SHAPER" ;;
-    *)
-      if [ -e "$FM_HOME/projects/starship-voice/bin/announce" ]; then
-        SHAPER="$FM_HOME/projects/starship-voice/bin/announce"
-      elif [ -e "$FM_HOME/projects/glasses-voice/bin/announce" ]; then
-        SHAPER="$FM_HOME/projects/glasses-voice/bin/announce"
-      else
-        return 1
-      fi
-      ;;
+    *) SHAPER="$FM_HOME/$CFG_SHAPER" ;;
   esac
 }
 
