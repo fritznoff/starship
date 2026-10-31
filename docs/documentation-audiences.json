@@ -119,6 +119,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/opt-in-skills/daily-todo-freshness/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/opt-in-skills/intake-digest-lines/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -315,12 +323,28 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".github/ISSUE_TEMPLATE/bug.md",
+      "audience": "public-product"
+    },
+    {
+      "path": ".github/README.md",
+      "audience": "public-product"
+    },
+    {
+      "path": ".github/pull_request_template.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".greptile/rules.md",
       "audience": "maintainer-architecture"
     },
     {
       "path": "AGENTS.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "audience": "operator-current"
     },
     {
       "path": "CLAUDE.md",
@@ -351,6 +375,10 @@
       "audience": "public-product"
     },
     {
+      "path": "SECURITY.md",
+      "audience": "public-product"
+    },
+    {
       "path": "VISION.md",
       "audience": "public-product"
     },
@@ -364,6 +392,10 @@
     },
     {
       "path": "docs/adhd.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/channel-intake.md",
       "audience": "operator-current"
     },
     {
@@ -697,6 +729,10 @@
     {
       "path": "docs/supervision-host.md",
       "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/teams-and-add-ons.md",
+      "audience": "operator-current"
     },
     {
       "path": "docs/tmux-backend.md",

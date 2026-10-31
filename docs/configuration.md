@@ -18,6 +18,8 @@ Start with the directory layout, then use the setting reference for the behavior
 | Speech transcription engine and comparison experiment | [Speech-to-text provider and shadow comparison](#speech-to-text-provider-and-shadow-comparison-configstt) |
 | The call recorder | [Call recorder](#call-recorder-configcall-companion) |
 | Meetings recorded by Anarlog, and shared glasses calls | [Meeting intake](#meeting-intake-configmeetings) |
+| The morning intake, the continuous channel intake and the daily to-do page | [Daily intake and to-do page](#daily-intake-and-to-do-page-configmorning-intake-configchannel-intake) |
+| Which Starship version "update starship" follows | [Update channel](#update-channel-configupdate-channel) |
 | A home's own private tools beside the shared code | [Private add-on](#private-add-on-configaddon) and [opt-in skills](#opt-in-skills-configadhd-configsecond-opinion) |
 | Keeping private names out of this public repository | [Private leak words](#private-leak-words-configleak-words) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
@@ -617,6 +619,7 @@ Each switch is an optional local, gitignored presence flag; any file at the path
 | `adhd` and `adhd-auto-fire` ([adhd.md](adhd.md)) | `config/adhd` |
 | `second-opinion-auto-fire` ([second-opinion.md](second-opinion.md)) | `config/second-opinion` |
 | `macos-computer-use` | `config/computer-use` (above) |
+| `intake-digest-lines` and `daily-todo-freshness` | `config/morning-intake` or `config/channel-intake` ([below](#daily-intake-and-to-do-page-configmorning-intake-configchannel-intake)) |
 
 A switched-on skill is linked into `.agents/skills/` under its usual name, so it loads exactly as a tracked skill does, and the link is gitignored.
 A harness lists skills when it starts, so a changed switch takes effect from the next launch.
@@ -639,14 +642,70 @@ With no `config/addon` a home behaves exactly as it does without add-ons.
 An add-on keeps this repository's layout, so a tool moves between the two by moving its files:
 
 - Every skill in the add-on's `.agents/skills/` is linked into the home's checkout as an opt-in skill is, and replaces an opt-in skill of the same name.
-- Hooks in the add-on's `hooks/<point>/` run beside this repository's own built-in `hooks/<point>/`, in name order, and replace a built-in hook of the same name: `bootstrap` adds read-only startup checks, `session-start` adds standing instructions to the session-start digest, `sentinel` names work that keeps the host sentinel watching a home with no task in flight, `watcher` files are sourced into the watcher when it starts, and `deck-staging` adds staging runs to the Action Deck.
+- Hooks in the add-on's `hooks/<point>/` run beside this repository's own built-in `hooks/<point>/`, in name order, and replace a built-in hook of the same name: `bootstrap` adds read-only startup checks, `session-start` adds standing instructions to the session-start digest, `sentinel` names work that keeps the host sentinel watching a home with no task in flight, `watcher` files are sourced into the watcher when it starts, `deck-staging` adds staging runs to the Action Deck, and `todo-verbs` and `todo-page` extend the daily to-do page (below).
+- A `leak-words` file at the add-on's root adds its words to the home's [private leak words](#private-leak-words-configleak-words), so a private team add-on can carry that team's names to every teammate.
 
 `/updatefirstmate` ("update starship") fast-forwards the add-on from its origin with the same guards as the shared code and relinks its skills, and a remote second mate's home fast-forwards the add-on its own `config/addon` names.
 `bin/fm-home-port.sh` carries `config/addon` to another machine, clones the add-on during its one-command handoff, and fails `verify` while the checkout is missing, and `bin/fm-linux-setup.sh --addon <owner>/<repo>` names one on a new Linux machine.
-Personal tools that serve one home only, such as a morning or channel intake, a daily to-do page, glasses tools or device configuration staging, live in that home's own add-on rather than here.
+Personal tools that serve one home only, such as glasses tools or device configuration staging, live in that home's own add-on rather than here.
 Register the add-on as an ordinary project when workers should change it.
-The add-on is home-local and is not inherited by secondmate homes.
+The add-on is home-local and is not inherited by secondmate homes, though its `leak-words` list reaches them inside the inherited word list.
 `bin/fm-addon.sh` owns the configuration, the hook points and their contract, and the install.
+
+## Update channel (config/update-channel)
+
+The optional local, gitignored `config/update-channel` chooses what "update starship" (`/updatefirstmate`, `bin/fm-update.sh`) moves this home to.
+It holds one line, with blank lines and `#` comment lines ignored:
+
+| Value | Effect |
+| --- | --- |
+| `main` | The default, identical to an absent file: follow the newest merged default branch. |
+| `release` | Follow the newest named release, a monthly `starship-YYYY.MM` tag, or `starship-YYYY.MM.N` for a fix release in that month, on the default branch. |
+| `starship-YYYY.MM[.N]` | Stay on that one release; stepping back writes this. |
+
+The owner and active contributors stay on `main`; a client or a teammate who does not write code chooses `release`, so changes arrive once a month with notes.
+On a release value the update lands the home exactly on that release, never past it, and names the release in its result.
+A home ahead of the release only by changes already on the default branch, such as a fresh install or one that just switched from `main`, moves back onto the release on its next update; nothing is lost, because every change it skips is still on the default branch.
+A dirty home is skipped, and a home with its own changes that are not on the default branch is skipped as diverged and left untouched, exactly as on `main`.
+Each release's notes are its section of [CHANGELOG.md](../CHANGELOG.md).
+Every local and remote second mate follows the same release as the primary home, while the [private add-on](#private-add-on-configaddon) keeps following its own default branch.
+A remote second mate's host code root follows the primary home's channel too, `main` or its release, whatever that host's own file says.
+A malformed file stops the update before anything moves, and names the file.
+
+To go back one release, say so to the first mate, or run `bin/fm-update.sh --step-back` in `~/starship`.
+It moves the home to the previous release and writes that release's name into this file, so later updates stay there; write `release` again to follow new releases.
+It refuses on a dirty home, a home that is not exactly on a release (update it first), and the oldest release.
+Step back covers only a home without second mates.
+A home with second mates cannot step back; it can stop taking new releases instead by writing the name of the release it is on now, the one "update starship" reports, into this file.
+
+A maintainer cuts a release with `bin/fm-release.sh` after the month's reviewed catch-up has landed on a green default branch; it needs the [maintainer role](#firstmate-role-configfirstmate-role) and refuses unless every check on that commit is green.
+The file is home-local and is not inherited by secondmate homes.
+`bin/fm-release-lib.sh` owns the parsing and the release names and order, and `bin/fm-update.sh --help` and `bin/fm-release.sh --help` own the commands.
+
+## Daily intake and to-do page (config/morning-intake, config/channel-intake)
+
+Starship ships an optional daily intake that is off until a home turns it on.
+Its three parts work as one system:
+
+- The morning intake (`bin/fm-morning-intake.sh`) is a once-a-day gate that makes sure the morning read of the captain's channels happens, retries it, and shows a missed morning instead of skipping it.
+- The continuous channel intake (`bin/fm-channel-intake.sh`) checks the home's enrolled sources, such as Slack, mail, calendar and Asana, through the day, remembers what it has seen and what the captain still owes, and sends one grouped private alert for anything urgent.
+- The daily to-do page (`bin/fm-todo-render.sh`) is rebuilt from those records on every read, with no model call, and every line on it says when it was last checked at its source.
+
+Nothing reads, arms or schedules anything until the home's own private, gitignored config switches it on with an `enabled = true` line in `config/morning-intake` or `config/channel-intake`.
+Each home names its own sources, with their ids, in its private source inventory (`data/channel-intake/sources.tsv` by default); this repository carries no names, ids or accounts.
+`bin/fm-morning-intake.sh --help` and `bin/fm-channel-intake.sh --help` own every configuration key, and [`channel-intake.md`](channel-intake.md) owns the install, the source inventory, the alert recipient check and rollback.
+To turn it on:
+
+1. Write `config/morning-intake` and `config/channel-intake` with `enabled = true` and the home's `timezone`, then the source inventory.
+2. Arm the live checks and the schedules: `bin/fm-morning-intake.sh arm-check` and `bin/fm-morning-intake-schedule.sh install`, and the same pair for `fm-channel-intake`.
+3. Start a new session, so the `intake-digest-lines` and `daily-todo-freshness` skills are linked in.
+   Either file being present switches those two skills on, as an opt-in skill (above).
+
+By default the page folds a home's captain-held backlog decisions into its collapsed "Firstmate tooling approvals" section; a home whose held decisions are genuine calls for its owner, such as business calls, plans or purchases, adds `held_decisions_need_you = true` to `config/channel-intake` to list them in "Needs you now" instead, while approvals about Firstmate's own tooling keep their fold, and `bin/fm-todo-render.sh --help` owns how the page draws that line.
+The intakes print their state into the session-start digest through the built-in `hooks/bootstrap/10-morning-intake` and `hooks/bootstrap/20-channel-intake`, and stay silent on a home that has not opted in.
+A home whose private add-on (above) carries same-named tools, hooks or skills keeps running the add-on's: its hooks and skills replace the built-in ones, and a schedule or live check it armed names its own scripts.
+An add-on can also extend the to-do page without carrying its own copy: a `todo-verbs` hook takes more verbs typed on a row, such as changes to a ticket the row names, moves the row with `bin/fm-todo.sh close` or `hand-over` and marks it with `bin/fm-todo.sh mark`, and a `todo-page` hook adds a section of its own; `bin/fm-todo.sh --help` and `bin/fm-todo-render.sh --help` own those contracts.
+The configuration and records are home-local and are not inherited by secondmate homes.
 
 ## Captain ledger (config/captain-ledger)
 
@@ -3355,10 +3414,12 @@ An opt-in, per-home and per-device gate for speaking a captain-facing outcome ou
 It ships inert: with no `enabled = true` line in private gitignored `config/speak`, `bin/fm-speak.sh` makes no sound at all, so cloning this repo, seeding a secondmate home, or adding a device never makes it talk.
 
 This is a sink, not a companion.
-The spoken register - outcome first, a few short sentences inside a bounded spoken length, never a URL, path or id, and never a request for a spoken yes - is owned once by the glasses project's `announce` entry point, which already enforces it for the glasses loop.
+The spoken register - outcome first, a few short sentences inside a bounded spoken length, never a URL, path or id, and never a request for a spoken yes - is owned once by an external register owner the home names, not by this repository.
 `bin/fm-speak.sh` shapes every line through that owner and refuses to speak when it cannot reach it, because speaking unshaped text would read a URL aloud.
-Reusing that owner is deliberate: a second copy of the register in this repository would drift from the one the glasses already speak.
-The practical consequence is that desk voice-out needs that project's local entry point present - `projects/starship-voice/bin/announce`, or the retiring `projects/glasses-voice/bin/announce` when the starship-voice clone is absent - and `FM_SPEAK_SHAPER` can name another one exposing the same `--dry-run <text>` contract.
+Reusing that owner is deliberate: a second copy of the register in this repository would drift from the one the owner already enforces.
+The practical consequence is that desk voice-out needs the `shaper` key in `config/speak`, naming an executable that exposes the `--dry-run <text>` contract as an absolute path or one relative to the home; `FM_SPEAK_SHAPER` takes precedence over it; with neither, the home's `projects/starship-voice/bin/announce` is used when present, else the retiring `projects/glasses-voice/bin/announce`, and with none of these nothing is spoken.
+The shaper contract has two parts: the owner implements `--dry-run <text>`, printing the shaped line on stdout or exiting 2 to refuse it, and it reads its spoken budget from the `GLASSES_ANNOUNCE_CONFIG` file `bin/fm-speak.sh` points it at ([`docs/examples/desk-speak-register.toml`](examples/desk-speak-register.toml), see **Desk spoken bound** below); an owner that ignores that variable uses its own budget instead.
+**Upgrading an armed home.** A home armed before the `shaper` key existed keeps speaking through its voice project clone; a home without such a clone needs a `shaper` line in `config/speak`.
 
 **Speaker preference.** A named voice picks the speaker. With a non-empty `voice` in `config/speak`, `bin/fm-speak.sh` speaks through macOS `say` in that voice, because Deepgram takes its voice from `DEEPGRAM_TTS_MODEL`, set in the environment or this home's gitignored `.env`, and cannot honour that key. With no voice named, `DEEPGRAM_API_KEY` in the environment or this home's gitignored `.env` sends the line to Deepgram Aura (`bin/fm-deepgram-tts.sh`, default model `aura-2-thalia-en`), played with `afplay`. Either way the other speaker is the fallback: Deepgram when there is no usable `say` binary, `say` when the key is absent or Deepgram fails. The speaker is chosen before the line is handed over and never swapped afterwards, so a speaker that fails once it has the line is not re-spoken through the other one. A named `voice` is checked against the voices `say` actually has before the handoff, because `say` substitutes a voice it does not have and still exits 0; a voice this machine does not have is reported on stderr and nothing is spoken. The name is matched no more strictly than `say` resolves it - case is ignored, and a bare `Ava` reaches `Ava (Premium)` - so only a name that cannot resolve at all is refused. That check runs beside the register call under its own bound rather than after it, so it does not extend the worst case a turn can be held, and a voice confirmed once is remembered in `state/speak-voice-confirmed` so only the first spoken line waits for it. The key is never logged, and this covers speech out only - the desk floater's transcription still uses the same key.
 **Desk spoken bound.** The register owner truncates before playback and its own default budget is the ~8s one tuned for the glasses, which cuts an ordinary desk outcome mid-message.
@@ -3366,11 +3427,11 @@ So `bin/fm-speak.sh` points that owner at [`docs/examples/desk-speak-register.to
 The bound belongs to the desk, not to the speaker, so it is the same whichever speaker plays the line, macOS `say` or Deepgram Aura.
 Override with `FM_SPEAK_DEEPGRAM_REGISTER`, or keep the short glasses cut with `FM_SPEAK_DEEPGRAM_REGISTER=` (empty); the variable keeps its historical name because it is the published opt-out.
 
-Because the register owner refuses text that asks the captain to decide, a merge, a spend, an outward action, or any other approval structurally cannot be put to him by voice; those stay in the reply he reads.
+Because the register owner refuses text that asks the captain to decide, a merge, a spend, an outward action, or any other approval structurally cannot be put to the captain by voice; those stay in the written reply.
 Nothing here observes audio, so a successful call means the shaped line was handed to the speaker, never that it was produced or heard.
 
 Configuration is `key = value` lines; unknown keys are refused rather than ignored.
-`enabled` arms this home, and the optional `voice` names a `say` voice, which also selects `say` as the speaker.
+`enabled` arms this home, `shaper` names the register owner, and the optional `voice` names a `say` voice, which also selects `say` as the speaker.
 [`docs/examples/speak`](examples/speak) is an example file that turns spoken replies on; a new home never installs it on its own.
 The script's header and `--help` own the exact invocation, the environment overrides, and the exit codes.
 [`desk-voice-replies.md`](desk-voice-replies.md) owns when the orchestrator speaks; the session-start digest prints it only in a home opted in here.
@@ -3495,7 +3556,7 @@ Every other worker adapter is outside that order and its launch is unchanged.
 
 ## Starter settings (first launch)
 
-A new home's first launch with a Claude profile (`bin/fm-primary.sh opus`, or `claude`) installs the Claude starter settings into its private `config/`, so a teammate's Starship is set up the team's way without copying anything by hand.
+A new home's first launch with a Claude profile (`bin/fm-primary.sh opus`, or `claude`) installs the Claude starter settings into its private `config/`, so a new Starship starts with the starter settings without copying anything by hand.
 A new home is one whose `state/` is absent or empty, which means it has never run.
 
 | Installed as | Copied from | What it does |
@@ -3573,18 +3634,47 @@ Any other content restores as off rather than refusing, because a corrupt prefer
 
 `config/leak-words` is an optional LOCAL, gitignored file listing words and phrases that must never appear in this public repository, such as the names of people and private projects.
 It holds one word or phrase per line; blank lines and lines starting with `#` are ignored, and matching ignores case and takes whole words only.
-Without the file, which is the default, the scan is unchanged.
+Without the file or one of the lists below, which is the default, the scan is unchanged.
 `bin/fm-leak-guard.sh` checks every tracked file against it, `tests/` included, and its header owns where it looks for the list, so a run from a task's isolated copy or a validation run's copy still finds the home's list.
 `bin/fm-lint.sh` runs that check on every default lint, including the validation pipeline's lint step, so these words are caught before each push; CI has no list, and without one the check is silent.
-The file is not inherited by secondmate homes.
+
+A home's [private add-on](#private-add-on-configaddon) may carry more words in a file named `leak-words` at the add-on's root, in the same format, and the guard checks them together with the home's own list.
+This is how a private team add-on keeps every teammate's list current: the team's colleague, partner and customer names live in that one file, and `/updatefirstmate` ("update starship") brings each teammate the latest copy with the rest of the add-on.
+Without that file, or without an add-on, nothing changes; an add-on that is configured but unusable is named on stderr and adds no words.
+The guard never prints the list; a hit names only the matching word or line.
+`fm_leak_words_write` in `bin/fm-leak-lib.sh` owns how the lists are merged.
+
+A list cannot keep up with every new name, so a home that keeps one also blocks new names by default.
+Before each push, `bin/fm-leak-guard.sh --new-names` reads the lines the branch adds since its merge base with `origin/main` and refuses every name-shaped word that has never appeared anywhere in this repository's tracked files at the merge base, naming each word and the file and line it is on.
+It reads the message of every commit in `origin/main..HEAD` the same way and names a hit there as `commit <short-sha>`.
+Without `origin/main`, or without a merge base with it, the check refuses with exit 2.
+A name-shaped word is a capitalised word made only of letters, such as a first name, or a CamelCase one, such as a product name, in any file; words in capitals, words with a digit or underscore, and words that start with a small letter are never name-shaped.
+A word the repository already holds, in any case, never triggers, and once a change lands its words are part of the repository and stop being new.
+The owner approves a new word once: firstmate then appends it as its own line to `config/leak-names-approved`, an optional LOCAL, gitignored file in the home's config, for example with `printf '%s\n' <word> >> "$FM_HOME/config/leak-names-approved"`, and the check passes it from then on.
+That file uses the word list's format, is never printed, and is never copied into tracked files.
+The private word lists stay as the backup for names that look like ordinary words.
+The same added lines and commit messages are also checked for the shapes customer data takes: Slack user, channel and direct-message ids and links into a named Slack workspace, HubSpot record and portal links, phone numbers, and IBANs with valid check digits.
+A phone number is one in international form, a plus and 8 to 15 digits, or a Dutch mobile number, 06 and 8 more digits, each optionally after a space or a dash.
+The full scan CI runs checks those shapes in every tracked file, beside the email, home path and key checks, with the same `tests/` exemption.
+`bin/fm-lint.sh` runs `--new-names` on every default lint, so the validation pipeline's lint step checks each push; without a word list or an approvals file, as in CI, it is silent.
+`bin/fm-leak-shapes.py` owns what counts as name-shaped, as an occurrence and as each data shape, and the guard's header owns the modes.
+
+Secondmate homes inherit the merged list as `config/leak-words.inherited` under the primary-authoritative contract in `bin/fm-config-inherit-lib.sh`, so a secondmate that inherits the right to publish to this repository through `config/firstmate-role` also keeps these words out of what it publishes.
+The guard checks a home's own `config/leak-words`, its `config/leak-words.inherited` and its add-on's list together.
+Inheritance replaces only `config/leak-words.inherited`, and removes it when the primary has no words; a secondmate home's own `config/leak-words` is never touched, so inheriting never shrinks the words that home keeps out.
+While the primary's add-on is configured but unusable, the inherited list is reported as an error and not pushed, each secondmate home keeps its last copy, and every other inherited item still converges.
+A changed list is never written into the reread message a live secondmate receives; its guard reads the file on every run.
 
 The same list keeps these words out of what workers publish to a public repository's pull requests: titles, descriptions, comments, and the intent and gate answers the validation pipeline turns into its PR.
 `bin/fm-leak-guard.sh --text [<file>|-]` checks draft text, from the named files or stdin, and names every listed word it contains; it exits 1 on a hit, 0 when the text is clean, and 0 silently without a list.
+For text bound for this repository, `--text --new-names` also names every new word and data shape the text holds, with the repository's tracked files as what it already holds.
+When it runs inside a checkout of this repository, one with a remote of the same owner/repo, the tracked files at that checkout's HEAD count as known too, so the words of the branch being published need no second approval.
 Every direct-PR and no-mistakes ship brief tells the worker to run it before opening, editing or commenting on a PR and before passing intent to the pipeline, and to check the published title, description and every comment, the pipeline's included, once the PR exists.
 On a public repository, a listed word in the captain's intent is replaced by its role before it reaches `--intent`; that is the one exception to passing the captain's words verbatim, and `bin/fm-dod-lib.sh` owns it.
 For a spawned Claude worker (crewmate or scout), `bin/fm-pr-text-guard.py` also checks each shell command that publishes such text through `gh` or `gh-axi`, or starts or answers the pipeline, and refuses it, naming the words, when the text holds a listed word unless every repository the command could reach is proven private.
+It refuses a new word or data shape the same way when the command could reach this repository while it is public, and tells the worker to ask for the owner's approval of each new word; other public repositories may hold words new to this one.
 A private repository's PRs may hold the words, a pipeline whose origin is not on GitHub is not checked, and a repository whose visibility cannot be read counts as possibly public and is refused; the script's header owns which commands count and which repositories a command could reach.
-Without the file, nothing is refused.
+Without any list or approvals file, nothing is refused.
 The check reads the list on every command, so a list added later needs no relaunch.
 The primary, secondmates and other worker harnesses are not checked by it.
 This repository's `.no-mistakes.yaml` tells the review, document and test steps, whose summaries and findings become the pipeline's PR text, to name people, companies and projects only by role and never quote a private name from findings or evidence.

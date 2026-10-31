@@ -23,7 +23,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-bearings-snapshot.sh` | Project the bounded remote-ledger fleet snapshot to compact TOON; `--include-prs` adds live GitHub enrichment |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
 | `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |
-| `fm-update.sh`           | Guarded self-update of firstmate and local or remote secondmate homes, reconciling redundant divergence and classifying every live mate left on the target commit for restart or fallback nudge |
+| `fm-update.sh`           | Guarded self-update of firstmate and local or remote secondmate homes to origin's default branch or, on the release channel, its newest release, reconciling redundant divergence and classifying every live mate left on the target commit for restart or fallback nudge; `--step-back` moves a release-channel home back one release |
+| `fm-release.sh`          | Maintainer-only cut of the next named Starship release from a green default branch, with its CHANGELOG.md section as notes |
 | `fm-secondmate-restart.sh` | Persist open conversational work, then restart eligible second mates or report the fallback outcome |
 | `fm-secondmate-restart-lib.sh` | Shared second-mate restart capability and persistence-request contract |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
@@ -56,7 +57,15 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-claude-reply-speak.sh` | Claude Stop `async` hook speaking the primary's final reply through desk voice-out when the turn spoke nothing (docs/configuration.md "Desk voice-out"), and warning the first mate at its next turn, without blocking, when that reply used internal terms `AGENTS.md` section 9 says to translate |
 | `fm-captain-ledger.sh` | Claude UserPromptSubmit hook recording each captain prompt to the captain ledger in a home opted in through config/captain-ledger, plus the `pending` listing the session-start digest prints until `mark` records them reconciled |
 | `fm-opt-in-skills.sh` | Link into `.agents/skills/` only the opt-in skills from `.agents/opt-in-skills/` that this home switched on with `config/` presence flags, so no other home lists them, plus every skill of this home's private add-on (docs/configuration.md "Opt-in skills") |
-| `fm-addon.sh` | This home's private add-on named by `config/addon`: resolve its checkout, list and run the `bootstrap`, `session-start`, `sentinel`, `watcher` and `deck-staging` hooks of this repository's `hooks/` and the add-on's, and clone a missing checkout (docs/configuration.md "Private add-on") |
+| `fm-addon.sh` | This home's private add-on named by `config/addon`: resolve its checkout, list and run the `bootstrap`, `session-start`, `sentinel`, `watcher`, `deck-staging`, `todo-verbs` and `todo-page` hooks of this repository's `hooks/` and the add-on's, and clone a missing checkout (docs/configuration.md "Private add-on") |
+| `fm-morning-intake.sh` | Opt-in once-a-day morning intake gate: arms, retries and closes the day's morning read and its to-do page, so a missed morning shows instead of being skipped (docs/configuration.md "Daily intake and to-do page") |
+| `fm-morning-intake-schedule.sh` | Install, render, report or remove the morning intake's macOS launchd schedule |
+| `fm-channel-intake.sh` | Opt-in continuous channel intake: per-source poll gate, obligation ledger, grouped private alert, brief and to-do list, and the re-check of open items on every pass (docs/channel-intake.md) |
+| `fm-channel-intake-schedule.sh` | Install, render, report or remove the channel intake's macOS launchd schedule |
+| `fm-todo.sh` | The daily to-do page's durable item store: one record per ask, its verification, the captain's page commands, and the add-on `todo-verbs`, `hand-over` and `mark` extension point |
+| `fm-todo-items.py` | The engine behind `fm-todo.sh` |
+| `fm-todo-render.sh` | Rebuild the day's Lavish to-do page from the item store with no model call, including add-on `todo-page` sections |
+| `fm-todo-compose.py` | The page composer behind `fm-todo-render.sh`, styled by `bin/templates/today-page.*.html` |
 | `fm-turnend-guard.sh`    | Shared primary turn-end guard predicate so no turn ends blind (docs/turnend-guard.md) |
 | `fm-turnend-guard-grok.sh` | Grok Stop-hook adapter for the primary turn-end guard                              |
 | `fm-kimi-turnend-hook.sh` | Surgically install or remove Kimi's guarded global crew turn-end hook                |
@@ -117,6 +126,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-timing-lib.sh`       | Single owner of the deferred network stage's per-step elapsed-time records, inert unless a run asks for them |
 | `fm-supervision-lib.sh`  | Shared in-flight-work-without-fresh-watcher-beacon predicate                         |
 | `fm-ff-lib.sh`           | Shared guarded fast-forward/reconcile helper for origin pulls and secondmate syncs, with durable divergence markers |
+| `fm-release-lib.sh`      | Release names and order, and the home's `config/update-channel` parser, shared by the update and the release cut |
 | `fm-lock-lib.sh`         | Shared "is this git lock provably abandoned?" proof used by teardown and fleet-sync   |
 | `fm-config-inherit-lib.sh` | Shared primary-to-secondmate inherited local-material propagation and config-reread delivery |
 | `fm-tasks-axi.sh`        | Run `tasks-axi` against this home's backlog from any working directory               |
@@ -204,7 +214,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-routing-snapshot.sh` | Read-only JSON snapshot of the dispatch roster, recent dispatch decisions, and each task record's kind and model, from local files only; feeds the bridge page's Routing section (docs/bridge-view.md) |
 | `fm-overlay.sh`          | Open a Markdown view as an in-terminal Herdr overlay pane, degrading to a printed pointer to the same content; installs nothing and is called nowhere by default (docs/chart-room.md) |
 | `fm-present.sh`          | Present a captain-action artifact once per unchanged milestone through its existing local owner |
-| `fm-speak.sh` | Speak one captain-facing outcome line out of this machine's speaker, shaped by the glasses spoken-register owner; a named `voice` selects macOS say, otherwise Deepgram Aura leads when DEEPGRAM_API_KEY is set, each the other's fallback (the script header owns the mechanic); inert unless config/speak opts the home in, which `--enabled` reports; `--stop`, `--repeat`, `--history`/`--replay` and `--mute`/`--unmute` back the desk floater's voice controls (docs/configuration.md "Desk voice-out", docs/desk-floater.md) |
+| `fm-speak.sh` | Speak one captain-facing outcome line out of this machine's speaker, shaped by the spoken-register owner `config/speak` names with `shaper`, else the home's voice project clone; a named `voice` selects macOS say, otherwise Deepgram Aura leads when DEEPGRAM_API_KEY is set, each the other's fallback (the script header owns the mechanic); inert unless config/speak opts the home in, which `--enabled` reports; `--stop`, `--repeat`, `--history`/`--replay` and `--mute`/`--unmute` back the desk floater's voice controls (docs/configuration.md "Desk voice-out", docs/desk-floater.md) |
 | `fm-deepgram-tts.sh` | Synthesize one line with Deepgram Aura and play it (or --to a file); reads DEEPGRAM_API_KEY from env or gitignored .env; never logs the key |
 | `fm-deepgram-stt.sh` | Transcribe one audio file with Deepgram or the configured local engine, optionally starting the detached shadow comparison; never logs the key (docs/configuration.md "Speech-to-text provider and shadow comparison") |
 | `fm-stt-local.sh` | Transcribe one audio file with the local OpenAI-compatible speech-to-text engine |
