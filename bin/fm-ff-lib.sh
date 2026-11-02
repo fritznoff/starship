@@ -7,6 +7,9 @@
 # path:
 #   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin",
 #     or "release:<name>" for a home on the release channel.
+#     With an optional config/self-update-source, it instead fetches that one
+#     remote branch for the primary and passes it as a local base, and its
+#     secondmates follow the primary's resulting commit (bin/fm-update.sh owns it).
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no origin dependency.
@@ -391,18 +394,26 @@ live_secondmate_meta_records() {
 #                  dependency (the local-HEAD secondmate sync). The commit must
 #                  already exist in the target's object store, which it always does
 #                  for a worktree of this same repo; a standalone clone that lacks
-#                  it is skipped rather than fetched.
+#                  it is skipped rather than fetched, unless the caller sets
+#                  FF_IMPORT_FROM to a local repository path that holds it. Then
+#                  that one commit is imported from there first (objects only,
+#                  no ref of the target moves), the same read-only import the
+#                  remote home sync uses. /updatefirstmate sets it to the primary
+#                  checkout when config/self-update-source is in use, because no
+#                  origin fetch then refreshes a standalone clone.
 # With an upstream (release mode, or the optional 8th argument naming a commit
 # already in the target's object store), a target that is not behind the base
-# but holds no commit outside that upstream is moved onto the base with
-# reset --keep, which cannot lose work the upstream does not already hold; a
-# target with any commit outside it is diverged as in every other mode.
+# but holds no commit outside that upstream is already past the base, and is
+# skipped as such rather than moved: an update never moves a home back, which
+# only bin/fm-update.sh --step-back does. A target with any commit outside the
+# upstream is diverged as in every other mode.
 # Guards are identical in every mode: never force/merge/stash; skip a dirty or
 # wrong-branch target and leave its work untouched. An optional secondmate id
 # enables the content-equivalent divergence proof and durable marker described
 # in this file's header.
 FF_STATUS=""
 FF_INSTR=""
+FF_IMPORT_FROM=""
 ff_target() {
   local dir=$1 label=$2 base_mode=$3 allow_detached=${4:-no} ignore_seed_marker=${5:-no}
   local secondmate_id=${6:-} reconciliation_state=${7:-} upstream=${8:-}
@@ -419,7 +430,7 @@ ff_target() {
   fi
 
   local default base cur instr local_rev base_rev before after out
-  local release="" to_release="" on_release="" base_label move=ff
+  local release="" to_release="" on_release="" base_label
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
@@ -440,7 +451,13 @@ ff_target() {
       fi
       base="origin/$default"
       ;;
-    *) base="$base_mode" ;;
+    *)
+      base="$base_mode"
+      if [ -n "$FF_IMPORT_FROM" ] \
+        && ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+        git -C "$dir" fetch --quiet --no-tags -- "$FF_IMPORT_FROM" "$base" >/dev/null 2>&1 || true
+      fi
+      ;;
   esac
   if [ "${base_mode#release:}" != "$base_mode" ]; then
     release=${base_mode#release:}
@@ -498,11 +515,18 @@ ff_target() {
     echo "$label: already current$on_release"
     return 0
   fi
+  # Past the base only by upstream commits: going there would move the home
+  # back, so it stays put. That is not a divergence and records nothing.
   if [ -n "$upstream" ] && ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null \
     && git -C "$dir" merge-base --is-ancestor HEAD "$upstream" 2>/dev/null; then
-    move=keep
+    if git -C "$dir" merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
+      echo "$label: skipped: already past $base_label; an update never moves a home back"
+    else
+      echo "$label: skipped: $base_label does not contain this home's commit; an update never moves a home back"
+    fi
+    return 0
   fi
-  if [ "$move" = ff ] && ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
+  if ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
     if [ -n "$secondmate_id" ] && [ -n "$reconciliation_state" ] \
       && divergence_is_redundant "$dir" "$local_rev" "$base_rev"; then
       instr=$(changed_instr "$dir" "$base")
@@ -537,12 +561,7 @@ ff_target() {
 
   instr=$(changed_instr "$dir" "$base")
   before=$(git -C "$dir" rev-parse --short HEAD)
-  if [ "$move" = keep ]; then
-    if ! out=$(git -C "$dir" reset --keep "$base" 2>&1); then
-      echo "$label: skipped: reset --keep to $base_label failed: $(first_line "$out")"
-      return 0
-    fi
-  elif ! out=$(git -C "$dir" merge --ff-only "$base" 2>&1); then
+  if ! out=$(git -C "$dir" merge --ff-only "$base" 2>&1); then
     echo "$label: skipped: fast-forward failed: $(first_line "$out")"
     return 0
   fi

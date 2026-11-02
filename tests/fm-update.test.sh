@@ -28,6 +28,11 @@
 #   - A home's private add-on (bin/fm-addon.sh) fast-forwards from its own
 #     origin under the same guards, a remote home's add-on line is relayed, and
 #     a home with no add-on prints nothing about one.
+#   - An optional config/self-update-source moves the primary to that one remote
+#     branch instead of origin, under the same fast-forward guards, and local
+#     secondmates (linked worktree or standalone clone) follow the primary's
+#     resulting commit; an unusable file refuses the whole update before
+#     anything moves rather than falling back to origin.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -788,35 +793,155 @@ test_release_channel_follows_newest_release() {
   pass "R2 the release channel follows the newest release and never moves past it"
 }
 
-test_release_channel_moves_a_newer_home_onto_the_release() {
-  local w out tip target
+test_release_channel_never_moves_a_newer_home_back() {
+  local w out tip
   w=$(new_world r3)
   add_sm "$w" sm1
   release_world "$w"
   run_update "$w" >/dev/null
   tip=$(git -C "$w/main" rev-parse HEAD)
   [ "$tip" = "$(git -C "$w/seed" rev-parse main)" ] || fail "the fixture home must start on main's tip"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$tip" ] || fail "the fixture second mate must start on main's tip"
   set_channel "$w" release
-  target=$(release_commit "$w" starship-2026.10.1)
 
   out=$(run_update "$w")
 
-  assert_contains "$out" "firstmate: updated " "a home past the newest release only by origin's commits moves"
-  assert_contains "$out" "to release starship-2026.10.1" "the move names the release it landed on"
-  assert_contains "$out" "secondmate sm1: updated " "a local second mate moves with its primary"
-  [ "$(git -C "$w/main" rev-parse HEAD)" = "$target" ] \
-    || fail "a home on main's tip that switches to release must land exactly on the newest release"
+  assert_contains "$out" "firstmate: skipped: already past release starship-2026.10.1; an update never moves a home back" \
+    "a home past the newest release says plainly that it stays"
+  assert_contains "$out" "secondmate sm1: skipped: already past release starship-2026.10.1; an update never moves a home back" \
+    "a second mate past its primary's release says plainly that it stays"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$tip" ] || fail "an update moved a home back to an older release"
   [ "$(git -C "$w/main" symbolic-ref --short HEAD)" = main ] || fail "the home left its default branch"
-  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$target" ] \
-    || fail "a local second mate must land on the same release as its primary"
-  assert_contains "$out" "restart-secondmates: fm-sm1" "a second mate moved onto the release still restarts"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$tip" ] || fail "an update moved a second mate back to an older release"
   [ ! -e "$w/home/state/.secondmate-update-reconcile/sm1.pending" ] \
-    || fail "moving onto a release whose skipped commits are on origin is not a divergence"
+    || fail "staying past a release is not a divergence"
+  assert_contains "$out" "restart-secondmates: none" "a second mate that did not move is not restarted"
+
+  bump_origin "$w" readme
+  tag_origin "$w" starship-2026.11
+  out=$(run_update "$w")
+  assert_contains "$out" "firstmate: updated " "a newer release that passes the home moves it forward"
+  assert_contains "$out" "to release starship-2026.11" "the forward move names the release"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$(release_commit "$w" starship-2026.11)" ] \
+    || fail "a second mate must follow its primary forward onto the newer release"
+  pass "R3 a home and its second mates past the release stay put until a newer release passes them"
+}
+
+# A release-shaped name for <offset> months after the current UTC month, with a
+# fix number so it never collides with the fixture's fixed names.
+month_release() {  # <offset>
+  date -u '+%Y %m' | awk -v o="$1" '{ i = $1 * 12 + $2 - 1 + o; printf "starship-%04d.%02d.9\n", int(i / 12), i % 12 + 1 }'
+}
+
+test_release_behind_a_home_never_moves_it_back() {
+  local w out on_release sm_before name
+  w=$(new_world r9)
+  add_sm "$w" sm1
+  release_world "$w"
+  set_channel "$w" release
+  run_update "$w" >/dev/null
+  on_release=$(release_commit "$w" starship-2026.10.1)
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$on_release" ] || fail "the fixture home must start on the newest release"
+  sm_before=$(git -C "$w/sm1" rev-parse HEAD)
+  [ "$sm_before" = "$on_release" ] || fail "the fixture second mate must start on its primary's release"
+  # The newest name, within the allowed month, on an old commit of main.
+  name=$(month_release 1)
+  git -C "$w/seed" fetch -q origin
+  git -C "$w/seed" tag -a -m "$name" "$name" "$(release_commit "$w" starship-2026.09)"
+  git -C "$w/seed" push -q origin "refs/tags/$name"
 
   out=$(run_update "$w")
-  assert_contains "$out" "firstmate: already current on release starship-2026.10.1" \
-    "a home moved onto the release stays there"
-  pass "R3 a home past the release only by origin's commits moves onto the release"
+
+  assert_contains "$out" "firstmate: skipped: already past release $name; an update never moves a home back" \
+    "a newest release behind the home is refused plainly"
+  assert_contains "$out" "secondmate sm1: skipped: already past release $name; an update never moves a home back" \
+    "a second mate following its primary is not moved back either"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$on_release" ] || fail "a release behind the home moved it back"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$sm_before" ] || fail "a release behind a second mate moved it back"
+  [ ! -e "$w/home/state/.secondmate-update-reconcile/sm1.pending" ] \
+    || fail "refusing to move back is not a divergence"
+  assert_contains "$out" "restart-secondmates: none" "nothing moved, so nothing restarts"
+
+  out=$(PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" \
+    "$UPDATE" --channel "$name" 2>/dev/null)
+  assert_contains "$out" "firstmate: skipped: already past release $name" "a named release behind the home is refused too"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$on_release" ] || fail "--channel with an older release moved the home back"
+  pass "R9 a newest release behind a home and its second mates never moves them back"
+}
+
+test_far_future_release_names_are_ignored() {
+  local w out name
+  w=$(new_world r10)
+  release_world "$w"
+  set_channel "$w" release
+  git -C "$w/seed" fetch -q origin
+  git -C "$w/seed" tag -a -m starship-9999.12 starship-9999.12 "$(release_commit "$w" starship-2026.09)"
+  git -C "$w/seed" push -q origin refs/tags/starship-9999.12
+  bump_origin "$w" readme
+  name=$(month_release 2)
+  tag_origin "$w" "$name"
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "to release starship-2026.10.1" "names more than a month ahead are not the newest release"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$(release_commit "$w" starship-2026.10.1)" ] \
+    || fail "a far-future name decided where the home went"
+
+  name=$(month_release 1)
+  bump_origin "$w" readme
+  tag_origin "$w" "$name"
+  out=$(run_update "$w")
+  assert_contains "$out" "to release $name" "a name for next month is still a release"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$(release_commit "$w" "$name")" ] \
+    || fail "the home must follow a release named for next month"
+  pass "R10 release names more than a month ahead are ignored"
+}
+
+test_deleted_release_stops_counting() {
+  local w out
+  w=$(new_world r11)
+  release_world "$w"
+  set_channel "$w" starship-2026.10
+  bump_origin "$w" readme
+  tag_origin "$w" starship-2026.11
+  run_update "$w" >/dev/null
+  [ -n "$(git -C "$w/main" tag -l starship-2026.11)" ] || fail "the fixture home must have fetched the release"
+  git -C "$w/seed" push -q origin :refs/tags/starship-2026.11
+  set_channel "$w" release
+
+  out=$(run_update "$w")
+
+  [ -z "$(git -C "$w/main" tag -l starship-2026.11)" ] || fail "a release deleted on origin was kept locally"
+  assert_contains "$out" "to release starship-2026.10.1" "a deleted release is no longer the newest"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$(release_commit "$w" starship-2026.10.1)" ] \
+    || fail "the home followed a release origin deleted"
+  pass "R11 a release deleted on origin stops counting on the next update"
+}
+
+test_step_back_from_past_every_release() {
+  local w out tip
+  w=$(new_world r12)
+  release_world "$w"
+  run_update "$w" >/dev/null
+  tip=$(git -C "$w/main" rev-parse HEAD)
+  set_channel "$w" release
+  sb() { PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" \
+    "$UPDATE" --step-back 2>&1; }
+
+  printf 'local only\n' > "$w/main/LOCAL.md"
+  git -C "$w/main" add LOCAL.md
+  git -C "$w/main" commit -qm local
+  out=$(sb) && fail "step back must refuse a home with a commit that is not on origin"
+  assert_contains "$out" "this home has commits that are not on origin/main" "the refusal names the local commit"
+  git -C "$w/main" reset -q --keep "$tip"
+
+  out=$(sb) || fail "step back from past every release failed: $out"
+  assert_contains "$out" "to release starship-2026.10.1; config/update-channel now holds starship-2026.10.1" \
+    "step back from past every release lands on the newest release behind the home"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$(release_commit "$w" starship-2026.10.1)" ] \
+    || fail "step back must land exactly on the newest release behind the home"
+  [ "$(cat "$w/home/config/update-channel")" = starship-2026.10.1 ] || fail "step back must hold the home on that release"
+  pass "R12 step back goes from past every release to the newest release behind the home"
 }
 
 test_release_channel_leaves_local_commits_alone() {
@@ -975,6 +1100,165 @@ test_remote_secondmate_follows_the_release() {
   pass "R7 a remote second mate follows the primary's release"
 }
 
+# --- self-update source helpers -------------------------------------------
+
+# Add a standalone-clone secondmate home (its own object store, unlike add_sm's
+# linked worktree), plus its state meta. Args: world id.
+add_standalone_sm() {
+  local w=$1 id=$2
+  git clone -q "$w/origin.git" "$w/$id"
+  git -C "$w/$id" remote set-head origin main >/dev/null 2>&1 || true
+  {
+    printf 'window=main:fm-%s\n' "$id"
+    printf 'endpoint_task_id=%s\n' "$id"
+    printf 'worktree=%s/%s\n' "$w" "$id"
+    printf 'project=%s/%s\n' "$w" "$id"
+    printf 'kind=secondmate\n'
+    printf 'harness=claude\n'
+    printf 'home=%s/%s\n' "$w" "$id"
+  } > "$w/home/state/$id.meta"
+  printf 'fm-%s\n' "$id" >> "$w/fake/windows"
+  printf '%s\n' "$id" > "$w/$id/.fm-secondmate-home"
+}
+
+# Create a bare fork whose `carry` branch is origin's current main plus one
+# carried commit touching the instruction surface, and add it to the primary
+# as the remote `fork`. Echoes the carry commit.
+add_fork_carry() {
+  local w=$1 carry
+  git init -q --bare "$w/fork.git"
+  git -C "$w/seed" pull -q origin main >/dev/null 2>&1 || true
+  git -C "$w/seed" checkout -q -b carry-work
+  printf 'carried\n' >> "$w/seed/AGENTS.md"
+  printf 'echo carried\n' > "$w/seed/bin/tool.sh"
+  git -C "$w/seed" add -A
+  git -C "$w/seed" commit -qm carried-fix
+  git -C "$w/seed" push -q "$w/fork.git" carry-work:carry
+  carry=$(git -C "$w/seed" rev-parse HEAD)
+  git -C "$w/seed" checkout -q main
+  git -C "$w/main" remote add fork "$w/fork.git"
+  printf '%s\n' "$carry"
+}
+
+write_source() {
+  mkdir -p "$1/home/config"
+  printf '%s\n' "$2" > "$1/home/config/self-update-source"
+}
+
+# --- T13: the primary follows the configured branch; secondmates follow it ---
+test_self_update_source_follows_branch() {
+  local w out carry
+  w=$(new_world src13)
+  add_sm "$w" sm1
+  add_standalone_sm "$w" sm2
+  carry=$(add_fork_carry "$w")
+  # origin also moves, and that commit is NOT in the carry branch, so landing
+  # on it would prove origin was used.
+  bump_origin "$w" readme
+  write_source "$w" "fork carry"
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "self-update source: fork carry" "the configured source is announced"
+  assert_contains "$out" "firstmate: updated " "the primary advanced"
+  assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$carry" "the primary did not land on the configured branch"
+  [ "$(git -C "$w/main" symbolic-ref --short HEAD 2>/dev/null)" = "main" ] \
+    || fail "the primary left its default branch"
+  assert_equals "$(git -C "$w/sm1" rev-parse HEAD)" "$carry" "a linked-worktree secondmate did not follow the primary"
+  assert_equals "$(git -C "$w/sm2" rev-parse HEAD)" "$carry" "a standalone-clone secondmate did not follow the primary"
+  assert_contains "$out" "reread-firstmate: yes" "the carried instruction change triggers a reread"
+  assert_contains "$out" "fm-sm1" "the linked secondmate is routed for restart"
+  assert_contains "$out" "fm-sm2" "the standalone secondmate is routed for restart"
+  assert_not_contains "$out" "nudge-secondmates: fm" "restartable mates are not nudged"
+
+  # Removing the file returns to origin; the carried commit is not in origin, so
+  # that path now reports divergence and moves nothing.
+  rm "$w/home/config/self-update-source"
+  out=$(run_update "$w")
+  assert_not_contains "$out" "self-update source:" "an absent file must not announce a source"
+  assert_contains "$out" "firstmate: skipped: diverged from origin/main" "without the file the origin path is used"
+  assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$carry" "the origin path moved a diverged primary"
+  pass "T13 config/self-update-source moves the primary and its local secondmates to that branch"
+}
+
+# --- T14: an unusable config refuses before anything moves ------------------
+test_self_update_source_refuses_unusable_config() {
+  local w before value rc err
+  w=$(new_world src14)
+  add_sm "$w" sm1
+  add_fork_carry "$w" >/dev/null
+  bump_origin "$w" instr
+  before=$(git -C "$w/main" rev-parse HEAD)
+
+  for value in "nosuchremote carry" "fork" "fork carry extra" "fork bad..branch" $'fork carry\nfork other'; do
+    write_source "$w" "$value"
+    err=$(PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" \
+      FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" 2>&1 >/dev/null)
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "an unusable self-update source ($value) did not refuse"
+    assert_contains "$err" "config/self-update-source" "the refusal ($value) must name the file"
+    assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$before" "the primary moved despite an unusable source ($value)"
+    assert_equals "$(git -C "$w/sm1" rev-parse HEAD)" "$before" "a secondmate moved despite an unusable source ($value)"
+  done
+  pass "T14 an unusable config/self-update-source refuses without falling back to origin"
+}
+
+test_self_update_source_refuses_a_release_channel() {
+  local w before rc err
+  w=$(new_world src16)
+  add_sm "$w" sm1
+  add_fork_carry "$w" >/dev/null
+  release_world "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+  write_source "$w" "fork carry"
+
+  set_channel "$w" release
+  err=$(PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" \
+    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" 2>&1 >/dev/null)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a self-update source on the release channel did not refuse"
+  assert_contains "$err" "config/self-update-source" "the refusal must name the source file"
+  assert_contains "$err" "update channel is release" "the refusal must name the channel it conflicts with"
+  assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$before" "the primary moved despite the refusal"
+  assert_equals "$(git -C "$w/sm1" rev-parse HEAD)" "$before" "a secondmate moved despite the refusal"
+
+  rm -f "$w/home/config/update-channel"
+  err=$(PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" \
+    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" --channel starship-2026.10 2>&1 >/dev/null)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a self-update source with a --channel release did not refuse"
+  assert_contains "$err" "update channel is starship-2026.10" "the refusal must name the release passed by --channel"
+  assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$before" "the primary moved despite the --channel refusal"
+  pass "T16 a self-update source combined with a release channel refuses before anything moves"
+}
+
+# --- T15: a rewritten (non-fast-forward) branch is skipped, never forced -------
+test_self_update_source_rewrite_is_skipped() {
+  local w out carry other
+  w=$(new_world src15)
+  add_sm "$w" sm1
+  carry=$(add_fork_carry "$w")
+  write_source "$w" "fork carry"
+  out=$(run_update "$w")
+  assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$carry" "setup: the primary did not reach the branch"
+
+  # Replace the branch with an unrelated line of history.
+  git -C "$w/seed" checkout -q -b rewritten "$carry~1"
+  printf 'other\n' >> "$w/seed/README.md"
+  git -C "$w/seed" add -A
+  git -C "$w/seed" commit -qm rewritten
+  git -C "$w/seed" push -q -f "$w/fork.git" rewritten:carry
+  other=$(git -C "$w/seed" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: skipped: diverged from refs/remotes/fork/carry" "a rewritten branch must be skipped"
+  assert_equals "$(git -C "$w/main" rev-parse HEAD)" "$carry" "the primary was moved off its commit"
+  assert_not_equals "$(git -C "$w/main" rev-parse HEAD)" "$other" "the primary was forced to the rewritten branch"
+  assert_contains "$out" "secondmate sm1: already current" "a secondmate stays on the primary's unchanged commit"
+  pass "T15 a non-fast-forward self-update source is skipped, never forced"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -997,12 +1281,20 @@ test_remote_addon_line_is_relayed
 test_remote_failure_after_addon_line_names_its_error
 test_default_channel_follows_main_past_releases
 test_release_channel_follows_newest_release
-test_release_channel_moves_a_newer_home_onto_the_release
+test_release_channel_never_moves_a_newer_home_back
 test_release_channel_leaves_local_commits_alone
 test_release_channel_never_moves_a_dirty_home
 test_malformed_channel_refuses_before_anything_moves
 test_step_back_one_release
 test_remote_secondmate_follows_the_release
 test_channel_flag_accepts_only_main_or_a_release_name
+test_release_behind_a_home_never_moves_it_back
+test_far_future_release_names_are_ignored
+test_deleted_release_stops_counting
+test_step_back_from_past_every_release
+test_self_update_source_follows_branch
+test_self_update_source_refuses_unusable_config
+test_self_update_source_rewrite_is_skipped
+test_self_update_source_refuses_a_release_channel
 
 echo "# all fm-update tests passed"

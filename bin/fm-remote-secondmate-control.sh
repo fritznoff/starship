@@ -7,6 +7,7 @@
 #   fm-remote-secondmate-control.sh state <id>
 #   fm-remote-secondmate-control.sh route <id>
 #   fm-remote-secondmate-control.sh send <id> <message> [fire-and-forget]
+#   fm-remote-secondmate-control.sh send-stdin <id> [fire-and-forget]  # message on stdin
 #   fm-remote-secondmate-control.sh key <id> <key>
 #   fm-remote-secondmate-control.sh capture <id> [lines]
 #   fm-remote-secondmate-control.sh observe <id>
@@ -38,9 +39,11 @@
 # config/update-channel (bin/fm-update.sh --channel): without <release> it moves
 # to origin's tip, and with <release>, from a parent on the release channel, it
 # moves to that one release, so the remote home follows its primary. On a
-# release the home then moves onto it under the release channel's rules, with
-# the code root's freshly fetched origin default branch as its upstream
-# (bin/fm-ff-lib.sh ff_target).
+# release the home then follows it under the release channel's rules, with the
+# code root's freshly fetched origin default branch as its upstream
+# (bin/fm-ff-lib.sh ff_target). A code root already past the release stays
+# there, and the home still follows the release itself, so a home behind it
+# moves forward onto it and a home already past it is skipped, never moved back.
 # A private parent-route state directory stores only the remote secondmate
 # agent's endpoint record; the home's own
 # state/*.meta remains reserved for workers the secondmate supervises.
@@ -185,7 +188,7 @@ cmd_launch() {
   validate_id "$id"
   validate_home "$id"
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|omp) ;;
     *) die "unverified remote secondmate harness: $harness" ;;
   esac
   case "$effort" in -|low|medium|high|xhigh|max|ultra) ;; *) die "invalid remote secondmate effort: $effort" ;; esac
@@ -257,7 +260,7 @@ cmd_relaunch() {
   validate_id "$id"
   validate_home "$id"
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|omp) ;;
     *) die "unverified remote secondmate harness: $harness" ;;
   esac
   case "$effort" in -|default|low|medium|high|xhigh|max|ultra) ;; *) die "invalid remote secondmate effort: $effort" ;; esac
@@ -287,7 +290,7 @@ cmd_relaunch() {
   print_route "$id"
 }
 
-cmd_send() {
+cmd_send_body() {
   local id=$1 message=$2 delivery_mode=${3:-} rec ring_rc=0 meta meta_lock
   validate_id "$id"
   [ -z "$delivery_mode" ] || [ "$delivery_mode" = fire-and-forget ] || die "invalid send delivery mode"
@@ -300,9 +303,9 @@ cmd_send() {
     fm_lock_release "$meta_lock"
     die "$REMOTE_ENDPOINT_ERROR"
   fi
-  # A remote steer is delivered by durable record, never by typing its payload
-  # into the pane: write it into this secondmate's host-local steering inbox,
-  # then ring the constant self-describing doorbell into the recorded pane,
+  # A remote steer is delivered by durable record, never by submitting its payload
+  # directly: write it into this secondmate's host-local steering inbox, then ring
+  # the constant self-describing doorbell through the recorded backend endpoint,
   # best-effort (bin/fm-task-inbox-lib.sh owns the record and doorbell). The
   # write is idempotent - re-running the same request after an ambiguous
   # transport failure lands on the existing record instead of a duplicate - so
@@ -328,6 +331,20 @@ cmd_send() {
     2) printf 'notice: doorbell did not reach %s; the steer is durably recorded at %s\n' "$REMOTE_ENDPOINT_TARGET" "$rec" >&2 ;;
     3) printf 'notice: doorbell not typed because the agent in %s has exited; the steer is durably recorded at %s for recovery\n' "$REMOTE_ENDPOINT_TARGET" "$rec" >&2 ;;
   esac
+}
+
+cmd_send() {
+  local id=$1 message=$2 delivery_mode=${3:-}
+  [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
+  cmd_send_body "$id" "$message" "$delivery_mode"
+}
+
+cmd_send_stdin() {
+  local id=$1 delivery_mode=${2:-} message
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
+  IFS= read -r -d '' message < /dev/stdin || :
+  [ -n "${message//[[:space:]]/}" ] || die "remote steer message must be nonempty"
+  cmd_send_body "$id" "$message" "$delivery_mode"
 }
 
 cmd_key() {
@@ -411,7 +428,7 @@ cmd_sync() {
 }
 
 cmd_update() {
-  local id=$1 release=${2:-} update_out root_status default upstream=""
+  local id=$1 release=${2:-} update_out root_status default upstream="" commit=""
   local channel=main
   validate_id "$id"
   validate_home "$id"
@@ -427,6 +444,7 @@ cmd_update() {
   root_status=$(printf '%s\n' "$update_out" | grep '^firstmate:' | tail -1)
   case "$root_status" in
     'firstmate: updated '*|'firstmate: already current'*) ;;
+    "firstmate: skipped: already past release $release; an update never moves a home back") ;;
     *)
       [ -z "$update_out" ] || printf '%s\n' "$update_out" >&2
       die "remote code root did not complete a safe origin update"
@@ -437,8 +455,10 @@ cmd_update() {
     default=$(default_branch "$FM_ROOT") || die "remote code root has no default branch"
     upstream=$(git -C "$FM_ROOT" rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}") \
       || die "remote code root has no origin/$default"
+    commit=$(git -C "$FM_ROOT" rev-parse --verify --quiet "refs/tags/$release^{commit}") \
+      || die "remote code root has no release $release"
   fi
-  cmd_sync "$id" "" "$upstream"
+  cmd_sync "$id" "$commit" "$upstream"
 }
 
 # The remote home's own private add-on (bin/fm-addon.sh) moves under the same
@@ -483,6 +503,7 @@ case "${1:-}" in
   state) shift; [ "$#" -eq 1 ] || usage; validate_id "$1"; validate_home "$1"; state_value "$1" ;;
   route) shift; [ "$#" -eq 1 ] || usage; cmd_route "$1" ;;
   send) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_send "$@" ;;
+  send-stdin) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage; cmd_send_stdin "$@" ;;
   key) shift; [ "$#" -eq 2 ] || usage; cmd_key "$@" ;;
   capture) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage; cmd_capture "$@" ;;
   observe) shift; [ "$#" -eq 1 ] || usage; cmd_observe "$@" ;;

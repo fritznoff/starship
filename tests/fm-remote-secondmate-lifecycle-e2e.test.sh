@@ -48,7 +48,7 @@ cleanup() {
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_stop_worker_tree "$worker_pid" || true
   fi
-  rm -rf -- "$TMP_ROOT"
+  fm_test_remove_tree "$TMP_ROOT"
 }
 trap cleanup EXIT
 
@@ -1281,26 +1281,72 @@ assert_contains "$UPDATE_OUT" 'add-on: updated ' "remote update did not fast-for
 pass "remote update imports and fast-forwards the persistent home and its private add-on on its configured host"
 
 # A parent on the release channel passes its release. The code root and the
-# home are both past that release only by origin's commits, so both land
-# exactly on it; a code root with its own commit is still refused.
+# home are both past that release only by origin's commits, so the update never
+# moves them back; a newer release moves both forward onto it. A code root past
+# the release still lands a home behind it on the release and still updates the
+# add-on, and a code root with its own commit is still refused.
+TIP_REV=$(git -C "$REMOTE_SEED" rev-parse HEAD)
 git -C "$REMOTE_SEED" tag -a -m starship-2026.10 starship-2026.10 HEAD~1
 git -C "$REMOTE_SEED" push -q origin refs/tags/starship-2026.10
-RELEASE_REV=$(git -C "$REMOTE_SEED" rev-parse 'starship-2026.10^{commit}')
 UPDATE_OUT=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios starship-2026.10 2>&1) \
-  || fail "a remote update following a release older than the home failed: $UPDATE_OUT"
+  && fail "a remote update following a release older than the home must refuse: $UPDATE_OUT"
+assert_contains "$UPDATE_OUT" "remote secondmate home sync skipped: already past " \
+  "the refusal must say plainly that the home stays past the release"
+assert_contains "$UPDATE_OUT" "an update never moves a home back" \
+  "the refusal must say why the home stays where it is"
+[ "$(git -C "$REMOTE_ROOT" rev-parse HEAD)" = "$TIP_REV" ] || fail "an older release moved the remote code root back"
+[ "$(git -C "$REMOTE_HOME" rev-parse HEAD)" = "$TIP_REV" ] || fail "an older release moved the remote home back"
+assert_present "$REMOTE_HOME/REMOTE_UPDATE_PROBE" "the remote home lost a file from past the release"
+[ ! -e "$REMOTE_HOME/state/.secondmate-update-reconcile/ios.pending" ] \
+  || fail "staying past the release must not read as a divergence"
+printf 'release probe\n' > "$REMOTE_SEED/RELEASE_PROBE"
+git -C "$REMOTE_SEED" add RELEASE_PROBE
+git -C "$REMOTE_SEED" commit -qm 'next release'
+git -C "$REMOTE_SEED" tag -a -m starship-2026.11 starship-2026.11
+printf 'past release\n' > "$REMOTE_SEED/PAST_RELEASE"
+git -C "$REMOTE_SEED" add PAST_RELEASE
+git -C "$REMOTE_SEED" commit -qm 'past the release'
+git -C "$REMOTE_SEED" push -q origin main refs/tags/starship-2026.11
+RELEASE_REV=$(git -C "$REMOTE_SEED" rev-parse 'starship-2026.11^{commit}')
+UPDATE_OUT=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios starship-2026.11 2>&1) \
+  || fail "a remote update following a newer release failed: $UPDATE_OUT"
 [ "$(printf '%s\n' "$UPDATE_OUT" | tail -1 | cut -c1-7)" = 'synced:' ] \
   || fail "the remote release update must end with a synced result: $UPDATE_OUT"
 [ "$(git -C "$REMOTE_ROOT" rev-parse HEAD)" = "$RELEASE_REV" ] \
   || fail "the remote code root did not land on the release"
 [ "$(git -C "$REMOTE_HOME" rev-parse HEAD)" = "$RELEASE_REV" ] \
   || fail "the remote home did not land on the same release as its code root"
-[ ! -e "$REMOTE_HOME/REMOTE_UPDATE_PROBE" ] || fail "the remote home kept a file from past the release"
-[ ! -e "$REMOTE_HOME/state/.secondmate-update-reconcile/ios.pending" ] \
-  || fail "moving the remote home onto the release must not read as a divergence"
+[ ! -e "$REMOTE_HOME/PAST_RELEASE" ] || fail "the remote home moved past the release"
+printf 'fix release probe\n' > "$REMOTE_SEED/FIX_RELEASE_PROBE"
+git -C "$REMOTE_SEED" add FIX_RELEASE_PROBE
+git -C "$REMOTE_SEED" commit -qm 'fix release'
+git -C "$REMOTE_SEED" tag -a -m starship-2026.11.1 starship-2026.11.1
+printf 'past fix release\n' > "$REMOTE_SEED/PAST_FIX_RELEASE"
+git -C "$REMOTE_SEED" add PAST_FIX_RELEASE
+git -C "$REMOTE_SEED" commit -qm 'past the fix release'
+git -C "$REMOTE_SEED" push -q origin main refs/tags/starship-2026.11.1
+TIP_REV=$(git -C "$REMOTE_SEED" rev-parse HEAD)
+RELEASE_REV=$(git -C "$REMOTE_SEED" rev-parse 'starship-2026.11.1^{commit}')
+git -C "$REMOTE_ROOT" fetch -q origin
+git -C "$REMOTE_ROOT" merge -q --ff-only origin/main
+printf 'three\n' > "$TMP_ROOT/addon-seed/README.md"
+git -C "$TMP_ROOT/addon-seed" commit -qam a3
+git -C "$TMP_ROOT/addon-seed" push -q origin main
+UPDATE_OUT=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios starship-2026.11.1 2>&1) \
+  || fail "a remote update with the code root past the release and the home behind it failed: $UPDATE_OUT"
+[ "$(printf '%s\n' "$UPDATE_OUT" | tail -1 | cut -d' ' -f1-2)" = "synced: $RELEASE_REV" ] \
+  || fail "the remote home behind the release must end with a synced result on the release: $UPDATE_OUT"
+[ "$(git -C "$REMOTE_ROOT" rev-parse HEAD)" = "$TIP_REV" ] || fail "an older release moved the remote code root back"
+[ "$(git -C "$REMOTE_HOME" rev-parse HEAD)" = "$RELEASE_REV" ] \
+  || fail "the remote home behind the release did not land on it while its code root is past it"
+[ ! -e "$REMOTE_HOME/PAST_FIX_RELEASE" ] || fail "the remote home moved past the release with its code root"
+assert_contains "$UPDATE_OUT" 'add-on: updated ' "a code root past the release must not stop the add-on update"
+[ "$(git -C "$REMOTE_HOME/projects/addon" rev-parse HEAD)" = "$(git -C "$ADDON_ORIGIN" rev-parse main)" ] \
+  || fail "the remote home's add-on is not at its origin's main while the code root is past the release"
 printf 'local only\n' > "$REMOTE_ROOT/LOCAL_ONLY"
 git -C "$REMOTE_ROOT" add LOCAL_ONLY
 git -C "$REMOTE_ROOT" commit -qm 'local code root commit'
-UPDATE_OUT=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios starship-2026.10 2>&1) \
+UPDATE_OUT=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios starship-2026.11.1 2>&1) \
   && fail "a remote code root with its own commit must refuse the release update: $UPDATE_OUT"
 assert_contains "$UPDATE_OUT" "remote code root did not complete a safe origin update" \
   "the refusal must name the unsafe code root update"
@@ -1412,7 +1458,7 @@ while kill -0 "$watch_pid" 2>/dev/null && [ "$SECONDS" -lt "$watch_deadline" ]; 
 done
 if kill -0 "$watch_pid" 2>/dev/null; then
   kill "$watch_pid" 2>/dev/null || true
-  fail "the watcher did not exit on its auto-relaunch wake within the bound: $(cat "$TMP_ROOT/watch-liveness.out" "$TMP_ROOT/watch-liveness.err" 2>/dev/null)"
+  fail "the watcher did not exit on its auto-relaunch wake within its ${watch_relaunch_timeout}s relaunch bound: $(cat "$TMP_ROOT/watch-liveness.out" "$TMP_ROOT/watch-liveness.err" 2>/dev/null)"
 fi
 wait "$watch_pid" \
   || fail "the liveness watcher leg exited non-zero: $(cat "$TMP_ROOT/watch-liveness.err")"
@@ -1682,11 +1728,14 @@ while [ ! -f "$TMP_ROOT/launch.entered" ]; do
   [ "$SECONDS" -lt "$launch_deadline" ] || fail "remote respawn never reached its blocked launch"
   sleep 0.02
 done
-# Opt-in archival must cover the parent-side status on the real remote path.
+# Both opt-in archives must cover the parent-side records on the real remote path.
 touch "$PARENT/config/status-archive"
+record_export_root="$TMP_ROOT/record-export"
+printf '%s\n' "$record_export_root" > "$PARENT/config/record-export-root"
 printf 'working: remote task history\ndone: remote task complete\n' > "$PARENT/state/ios.status"
-cp "$PARENT/state/ios.status" "$TMP_ROOT/remote-status.expected"
-cp "$PARENT/state/ios.meta" "$TMP_ROOT/remote-meta.saved"
+mkdir -p "$PARENT/state/ios.inbox/handled"
+printf 'pending remote steer\n' > "$PARENT/state/ios.inbox/001.msg"
+printf 'handled remote steer\n' > "$PARENT/state/ios.inbox/handled/002.msg"
 grep '^- ios ' "$PARENT/data/secondmates.md" > "$TMP_ROOT/remote-route.saved"
 FM_FAKE_SSH_MODE=retire-lost-slot remote_env "$ROOT/bin/fm-teardown.sh" ios \
   > "$TMP_ROOT/teardown-serialized.out" 2> "$TMP_ROOT/teardown-serialized.err" &
@@ -1699,6 +1748,13 @@ if ! wait "$spawn_retirement_pid"; then
   printf 'serialized respawn output:\n%s\n' "$(cat "$TMP_ROOT/spawn-retirement.out")" >&2
   fail "serialized remote respawn failed"
 fi
+# Pin the archive fixture generation only after the respawn has finished
+# publishing metadata, so the exporter sees exactly one spawn_gen.
+awk -F= '$1 != "spawn_gen"' "$PARENT/state/ios.meta" > "$TMP_ROOT/remote-meta.tmp"
+printf 'spawn_gen=remote-retirement-test\n' >> "$TMP_ROOT/remote-meta.tmp"
+mv -- "$TMP_ROOT/remote-meta.tmp" "$PARENT/state/ios.meta"
+cp "$PARENT/state/ios.status" "$TMP_ROOT/remote-status.expected"
+cp "$PARENT/state/ios.meta" "$TMP_ROOT/remote-meta.saved"
 sleep 0.2
 kill -0 "$teardown_pid" 2>/dev/null || fail "remote retirement bypassed an active backlog handoff"
 touch "$TMP_ROOT/handoff.release"
@@ -1741,6 +1797,18 @@ cmp -s "$TMP_ROOT/remote-status.expected" "$PARENT/data/ios/status.log" \
   || fail "remote retirement lost the parent-side status history"
 assert_absent "$PARENT/state/ios.status" "remote retirement left the archived status live"
 pass "remote retirement archives the complete parent-side status log when enabled"
+remote_spawn_gen=$(awk -F= '$1 == "spawn_gen" { print substr($0, index($0, "=") + 1) }' "$TMP_ROOT/remote-meta.saved")
+remote_record_archive="$record_export_root/archive/ios/$remote_spawn_gen"
+cmp -s "$TMP_ROOT/remote-meta.saved" "$remote_record_archive/meta" \
+  || fail "remote retirement lost the parent-side metadata export"
+cmp -s "$TMP_ROOT/remote-status.expected" "$remote_record_archive/status" \
+  || fail "remote retirement lost the parent-side status export"
+assert_grep 'pending remote steer' "$remote_record_archive/inbox/001.msg" \
+  "remote retirement lost a pending inbox export"
+assert_grep 'handled remote steer' "$remote_record_archive/inbox/handled/002.msg" \
+  "remote retirement lost a handled inbox export"
+assert_present "$remote_record_archive/manifest.v1.json" "remote retirement did not commit the record export manifest"
+pass "remote retirement commits parent-side metadata, status, and inbox records before cleanup"
 
 # Reconcile an already-retired remote home with no parent-side status. Holding
 # an unrelated presentation lock proves the no-op without risking an unbounded
