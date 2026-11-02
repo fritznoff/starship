@@ -4019,10 +4019,11 @@ The practical consequence is that desk voice-out needs the `shaper` key in `conf
 The shaper contract has two parts: the owner implements `--dry-run <text>`, printing the shaped line on stdout or exiting 2 to refuse it, and it reads its spoken budget from the `GLASSES_ANNOUNCE_CONFIG` file `bin/fm-speak.sh` points it at ([`docs/examples/desk-speak-register.toml`](examples/desk-speak-register.toml), see **Desk spoken bound** below); an owner that ignores that variable uses its own budget instead.
 **Upgrading an armed home.** Earlier versions found a default owner on their own, so a home that already has `enabled = true` needs a `shaper` line added to `config/speak` after updating; without it nothing is spoken.
 
-**Speaker preference.** A named voice picks the speaker. With a non-empty `voice` in `config/speak`, `bin/fm-speak.sh` speaks through macOS `say` in that voice, because Deepgram takes its voice from `DEEPGRAM_TTS_MODEL`, set in the environment or this home's gitignored `.env`, and cannot honour that key. With no voice named, `DEEPGRAM_API_KEY` in the environment or this home's gitignored `.env` sends the line to Deepgram Aura (`bin/fm-deepgram-tts.sh`, default model `aura-2-thalia-en`), played with `afplay`. Either way the other speaker is the fallback: Deepgram when there is no usable `say` binary, `say` when the key is absent or Deepgram fails. The speaker is chosen before the line is handed over and never swapped afterwards, so a speaker that fails once it has the line is not re-spoken through the other one. A named `voice` is checked against the voices `say` actually has before the handoff, because `say` substitutes a voice it does not have and still exits 0; a voice this machine does not have is reported on stderr and nothing is spoken. The name is matched no more strictly than `say` resolves it - case is ignored, and a bare `Ava` reaches `Ava (Premium)` - so only a name that cannot resolve at all is refused. That check runs beside the register call under its own bound rather than after it, so it does not extend the worst case a turn can be held, and a voice confirmed once is remembered in `state/speak-voice-confirmed` so only the first spoken line waits for it. The key is never logged, and this covers speech out only - the desk floater's transcription still uses the same key.
+**Speaker preference.** A named voice picks the speaker. With a non-empty `voice` in `config/speak`, `bin/fm-speak.sh` speaks through macOS `say` in that voice, because neither cloud speaker can honour that key: Deepgram takes its voice from `DEEPGRAM_TTS_MODEL`, set in the environment or this home's gitignored `.env`, and ElevenLabs from `elevenlabs_voice`. With no voice named, the cloud speaker the `speaker` key selects goes first, played with `afplay`: Deepgram Aura (`bin/fm-deepgram-tts.sh`, default model `aura-2-thalia-en`) when `DEEPGRAM_API_KEY` is in the environment or this home's gitignored `.env`, or, with `speaker = elevenlabs`, ElevenLabs (`bin/fm-elevenlabs-tts.sh`) when `ELEVENLABS_API_KEY` is. Either way the other speaker is the fallback: the cloud speaker when there is no usable `say` binary, `say` when its key is absent or it fails. A home that chose ElevenLabs but has no key gets a note on stderr each time it falls back to `say`, and the other cloud speaker is never tried instead. The speaker is chosen before the line is handed over and never swapped afterwards, so a speaker that fails once it has the line is not re-spoken through the other one. A named `voice` is checked against the voices `say` actually has before the handoff, because `say` substitutes a voice it does not have and still exits 0; a voice this machine does not have is reported on stderr and nothing is spoken. The name is matched no more strictly than `say` resolves it - case is ignored, and a bare `Ava` reaches `Ava (Premium)` - so only a name that cannot resolve at all is refused. That check runs beside the register call under its own bound rather than after it, so it does not extend the worst case a turn can be held, and a voice confirmed once is remembered in `state/speak-voice-confirmed` so only the first spoken line waits for it. Keys are never logged, and this covers speech out only - the desk floater's transcription picks its engine in [`config/stt`](#speech-to-text-provider-and-shadow-comparison-configstt).
+`bin/fm-speak.sh --speaker` prints the speaker an ordinary line would reach now (`say`, `deepgram`, `elevenlabs`, or `none`), checking only binaries and keys, so a home that chose ElevenLabs and reads `say` is missing its key.
 **Desk spoken bound.** The register owner truncates before playback and its own default budget is the ~8s one tuned for the glasses, which cuts an ordinary desk outcome mid-message.
 So `bin/fm-speak.sh` points that owner at [`docs/examples/desk-speak-register.toml`](examples/desk-speak-register.toml) via `GLASSES_ANNOUNCE_CONFIG` (unless already set) for every desk line, setting the spoken budget to **30 seconds** and seven sentences (about 78 words) while keeping the same URL/path/id and decision refusals.
-The bound belongs to the desk, not to the speaker, so it is the same whichever speaker plays the line, macOS `say` or Deepgram Aura.
+The bound belongs to the desk, not to the speaker, so it is the same whichever speaker plays the line, macOS `say`, Deepgram Aura or ElevenLabs.
 Override with `FM_SPEAK_DEEPGRAM_REGISTER`, or keep the short glasses cut with `FM_SPEAK_DEEPGRAM_REGISTER=` (empty); the variable keeps its historical name because it is the published opt-out.
 
 Because the register owner refuses text that asks the captain to decide, a merge, a spend, an outward action, or any other approval structurally cannot be put to the captain by voice; those stay in the written reply.
@@ -4030,6 +4031,9 @@ Nothing here observes audio, so a successful call means the shaped line was hand
 
 Configuration is `key = value` lines; unknown keys are refused rather than ignored.
 `enabled` arms this home, `shaper` names the register owner, and the optional `voice` names a `say` voice, which also selects `say` as the speaker.
+The optional `speaker` is `deepgram` (the default) or `elevenlabs`, and any other value is refused.
+`elevenlabs_voice` and `elevenlabs_model` optionally name the ElevenLabs voice id and model; absent, `bin/fm-elevenlabs-tts.sh`'s header owns the defaults, chosen for a quick reply.
+ElevenLabs keeps generated audio in the account's history under that account's own settings, since its per-request zero-retention switch is for Enterprise accounts only.
 [`docs/examples/speak`](examples/speak) is an example file that turns spoken replies on; a new home never installs it on its own.
 The script's header and `--help` own the exact invocation, the environment overrides, and the exit codes.
 [`desk-voice-replies.md`](desk-voice-replies.md) owns when the orchestrator speaks; the session-start digest prints it only in a home opted in here.
@@ -4065,9 +4069,10 @@ Optional, private, gitignored, and not inherited by secondmate homes.
 It teaches the desk floater's transcription (`bin/fm-deepgram-stt.sh`) the names and addresses this home's captain says, so a spoken email address arrives written correctly.
 Absent, transcription behaves exactly as without it.
 Lines starting with `#` and blank lines are ignored.
-A plain line is a key term, sent to Deepgram as a recognition hint for that request.
+A plain line is a key term, sent to Deepgram, or to ElevenLabs as its `keyterms`, as a recognition hint for that request; the local engine takes no hints.
+ElevenLabs refuses some terms and bills each request that carries any a little more, and its helper's header owns which terms it skips and how many it sends.
 A `heard => written` line rewrites the printed transcript after the selected engine returns it, for example `pat dot example 1 => pat.example1` for `Pat dot example 1`.
-Use Deepgram's returned spelling and numbers on the left: smart formatting happens before rewrites, so spoken `one` may arrive as `1`.
+Use the selected engine's returned spelling and numbers on the left: Deepgram's smart formatting happens before rewrites, so spoken `one` may arrive as `1`.
 Rewrites ignore case, match whole tokens (including email addresses, dotted names, contractions and hyphenated words) while still allowing a possessive `'s` or `’s` after the match, and try the longest heard phrase first.
 `--json` output stays the selected engine's raw response, untouched by rewrites.
 A malformed line is ignored, and a vocabulary that cannot be read never stops a transcription.
@@ -4078,16 +4083,18 @@ The script's header owns the hint parameters, the term caps, and the matching ru
 ## Speech-to-text provider and shadow comparison (config/stt)
 
 Optional, private, gitignored, and not inherited by secondmate homes.
-It chooses the engine `bin/fm-deepgram-stt.sh` transcribes with and can enable a background experiment comparing Deepgram with a local engine.
+It chooses the engine `bin/fm-deepgram-stt.sh` transcribes with and can enable a background experiment comparing two engines.
 Absent, transcription uses Deepgram and comparison is off.
 Each line is `key = value`; `#` comment lines are ignored and the last assignment wins.
 
 | Key | Values | Default | Effect |
 | --- | --- | --- | --- |
-| `primary` | `deepgram`, `local` | `deepgram` | The engine whose transcript callers receive. |
+| `primary` | `deepgram`, `local`, `elevenlabs` | `deepgram` | The engine whose transcript callers receive. |
 | `local_url` | URL | `http://127.0.0.1:8765/v1/audio/transcriptions` | The local engine's OpenAI-compatible transcription endpoint. |
 | `local_model` | model name | `mlx-community/parakeet-tdt-0.6b-v3` | The model the local engine is asked to use. |
+| `elevenlabs_model` | ElevenLabs model id | `scribe_v2` | The ElevenLabs Scribe model; only Scribe v2 models take key terms. |
 | `shadow` | `true`, `false` | `false` | Also run the other engine and a judge in the background after successful transcriptions. |
+| `shadow_with` | `deepgram`, `local`, `elevenlabs` | `local` with a Deepgram primary, else `deepgram` | The other engine the comparison runs; naming the primary itself falls back to the default with a note. |
 | `judge` | `auto`, `haiku`, `luna` | `auto` | The judge model; `auto` uses the configured quota ordering and falls back if a call fails. |
 | `judge_effort_haiku` | a `claude --effort` level | `medium` | How hard Haiku reasons as the judge. |
 | `judge_effort_luna` | a `pi --thinking` level | `xhigh` | How hard Luna reasons as the judge. |
@@ -4098,9 +4105,11 @@ The desk floater passes this value to direct transcription and saved-recording r
 
 The local engine uses mlx-audio's OpenAI-compatible server on macOS, listening on 127.0.0.1 only; `bin/fm-stt-local-server.sh` manages its per-user launch agent, and `bin/fm-stt-local.sh` sends transcription requests.
 With `primary = local`, no Deepgram key is needed and the same vocabulary rewrites apply.
+With `primary = elevenlabs`, `bin/fm-elevenlabs-stt.sh` transcribes with `ELEVENLABS_API_KEY` from the environment or this home's gitignored `.env`, the same vocabulary rewrites apply, and a missing key is refused exactly as a missing Deepgram key is, keeping the recording for a retry rather than switching engines.
+`bin/fm-deepgram-stt.sh --ready` prints the selected engine and `ready`, or `no-key` with exit 2 when that engine's key is absent, without sending any audio.
 
 With comparison enabled, the primary transcript returns without waiting for the detached comparison.
-`bin/fm-stt-shadow.sh` runs the other engine on the same audio, asks the configured judge which transcript is better, and appends a row to `data/stt-experiment/results.csv`.
+`bin/fm-stt-shadow.sh` runs the other engine on the same audio, asks the configured judge which transcript is better, and appends a row to `data/stt-experiment/results.csv`, setting aside a file started under an older column layout first.
 Each sample keeps its audio, both raw transcripts, and the judge's answer under `data/stt-experiment/samples/` for later review.
 The local engine being unavailable is recorded in the results; comparison failures do not change the primary transcription.
 The script headers own the endpoint, judgement, and CSV mechanics.

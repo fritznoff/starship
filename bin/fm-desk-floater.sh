@@ -6,7 +6,8 @@
 #   fm-desk-floater.sh --help
 #
 # Requires macOS with Swift 5.9+, microphone permission on first use, and
-# DEEPGRAM_API_KEY in the environment or this home's gitignored .env. The global
+# DEEPGRAM_API_KEY in the environment or this home's gitignored .env (or
+# ELEVENLABS_API_KEY when config/stt selects ElevenLabs). The global
 # hotkeys and typing dictated text into other apps also need the Accessibility
 # permission, and screenshots the Screen Recording permission. Sending dictation
 # typed into the Firstmate chat needs the Automation permission for Terminal,

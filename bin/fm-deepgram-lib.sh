@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Shared Deepgram helpers for desk speak-out and the desk floater.
+# Shared Deepgram and ElevenLabs helpers for desk speak-out and the desk
+# floater.
 #
 # Source this file; do not execute it.
 # Contract:
-#   fm_deepgram_api_key
+#   fm_deepgram_api_key / fm_elevenlabs_api_key
 #     Print the API key to stdout when available. Prefer the process environment
-#     (DEEPGRAM_API_KEY). Otherwise read only that key from the home's gitignored
-#     .env. Never prints the key to stderr. Exit 0 with empty stdout when absent.
+#     (DEEPGRAM_API_KEY / ELEVENLABS_API_KEY). Otherwise read only that key from
+#     the home's gitignored .env (FM_DEEPGRAM_ENV_FILE overrides its path for
+#     both). Never prints the key to stderr. Exit 0 with empty stdout when absent.
 #   fm_deepgram_load_dotenv_key
 #     Internal: read one key from a .env-style file without sourcing it.
 #   fm_deepgram_tts_model / fm_deepgram_stt_model
 #     Resolve model names from the environment, then the home's gitignored
 #     .env, then the documented defaults.
-#   fm_deepgram_auth_config <key>
-#     Write a 0600 curl config file carrying the Authorization header and print
-#     its path, so the key never appears in curl's argv. Caller removes it.
+#   fm_deepgram_auth_config <key> / fm_elevenlabs_auth_config <key>
+#     Write a 0600 curl config file carrying the provider's auth header
+#     (Authorization: Token, or xi-api-key) and print its path, so the key never
+#     appears in curl's argv. Caller removes it.
 #   fm_stt_setting <key> <default>
 #     Print one `key = value` setting from the home's private config/stt, or
 #     <default> when the file or key is absent. Last assignment wins; `#`
@@ -63,15 +66,24 @@ if val:
 PY
 }
 
-fm_deepgram_api_key() {
-  local key env_file
-  if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
-    printf '%s' "$DEEPGRAM_API_KEY"
+# Print one secret from the environment, else from the home's .env.
+fm_voice_api_key() {  # <variable>
+  local name=$1 key env_file
+  if [ -n "${!name:-}" ]; then
+    printf '%s' "${!name}"
     return 0
   fi
   env_file="${FM_DEEPGRAM_ENV_FILE:-$FM_HOME/.env}"
-  key=$(fm_deepgram_load_dotenv_key DEEPGRAM_API_KEY "$env_file") || key=
+  key=$(fm_deepgram_load_dotenv_key "$name" "$env_file") || key=
   printf '%s' "$key"
+}
+
+fm_deepgram_api_key() {
+  fm_voice_api_key DEEPGRAM_API_KEY
+}
+
+fm_elevenlabs_api_key() {
+  fm_voice_api_key ELEVENLABS_API_KEY
 }
 
 fm_deepgram_tts_model() {
@@ -96,15 +108,24 @@ fm_deepgram_stt_model() {
   printf '%s' "${model:-$FM_DEEPGRAM_DEFAULT_STT_MODEL}"
 }
 
-fm_deepgram_auth_config() {  # <key>
-  local key=$1 path
+# Write one curl config file holding <header-line>, readable only by this user.
+fm_voice_auth_config() {  # <header-line>
+  local header=$1 path
   path=$(umask 077 && mktemp "${TMPDIR:-/tmp}/fm-deepgram-auth.XXXXXX") || return 1
   chmod 600 "$path" 2>/dev/null || true
-  printf 'header = "Authorization: Token %s"\n' "$key" > "$path" || {
+  printf 'header = "%s"\n' "$header" > "$path" || {
     rm -f "$path"
     return 1
   }
   printf '%s' "$path"
+}
+
+fm_deepgram_auth_config() {  # <key>
+  fm_voice_auth_config "Authorization: Token $1"
+}
+
+fm_elevenlabs_auth_config() {  # <key>
+  fm_voice_auth_config "xi-api-key: $1"
 }
 
 fm_stt_setting() {  # <key> <default>

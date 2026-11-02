@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behavior tests for Deepgram desk speak preference and the desk-voice mailbox.
+# Behavior tests for Deepgram and ElevenLabs desk speech and the desk-voice mailbox.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -8,6 +8,7 @@ set -u
 
 SPEAK="$ROOT/bin/fm-speak.sh"
 TTS="$ROOT/bin/fm-deepgram-tts.sh"
+EL_TTS="$ROOT/bin/fm-elevenlabs-tts.sh"
 STT="$ROOT/bin/fm-deepgram-stt.sh"
 FLOATER="$ROOT/bin/fm-desk-floater.sh"
 DESK="$ROOT/bin/fm-desk-voice.sh"
@@ -17,6 +18,7 @@ TMP_ROOT=$(fm_test_tmproot fm-deepgram-desk)
 unset DEEPGRAM_API_KEY DEEPGRAM_STT_MODEL DEEPGRAM_TTS_MODEL || true
 unset FM_DEEPGRAM_DEFAULT_STT_MODEL FM_DEEPGRAM_DEFAULT_TTS_MODEL || true
 unset FM_STT_SHADOW FM_STT_PROVIDER FM_STT_SOURCE FM_STT_LOCAL_CURL || true
+unset ELEVENLABS_API_KEY FM_ELEVENLABS_CURL FM_SPEAK_ELEVENLABS_TTS || true
 export FM_DEEPGRAM_ENV_FILE=/dev/null
 # A mailbox delivery rings the primary in the background; cases that test the
 # ring turn it back on with their own short schedule.
@@ -703,6 +705,15 @@ wait_for_rows() {  # <home> <rows>
   fail "no shadow row after 20 seconds: $(cat "$1/data/stt-experiment/shadow.log" 2>/dev/null)"
 }
 
+# Print one named column of the newest experiment CSV row.
+last_row_field() {  # <home> <column>
+  python3 - "$1/data/stt-experiment/results.csv" "$2" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8")))
+sys.stdout.write(rows[-1][sys.argv[2]])
+PY
+}
+
 # Run the helper with mocked Deepgram and local engine in <home>.
 stt_mocked() {  # <home> [args...]
   local home=$1
@@ -783,7 +794,7 @@ test_stt_shadow_records_a_judged_row_without_delaying_the_caller() {
   assert_contains "$row" ",test-caller," "the caller is named"
   assert_contains "$row" ",deepgram," "the primary is named"
   assert_contains "$row" ",ok,ok,local,fewer slips,claude-haiku-5-5,samples/" "the judged winner is unblinded"
-  sample=$home/data/stt-experiment/${row##*,}
+  sample=$home/data/stt-experiment/$(last_row_field "$home" sample)
   [ -f "$sample/audio.wav" ] || fail "the audio is kept even after the caller deletes its copy"
   [ "$(cat "$sample/local.txt")" = "local heard this" ] || fail "local transcript kept"
   [ "$(cat "$sample/deepgram.txt")" = "deepgram heard this" ] || fail "deepgram transcript kept"
@@ -869,7 +880,7 @@ test_stt_shadow_override_true_beats_config() {
     rm -f "$home/clip.wav"
     wait_for_rows "$home" 1
     row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
-    sample=$home/data/stt-experiment/${row##*,}
+    sample=$home/data/stt-experiment/$(last_row_field "$home" sample)
     [ -f "$sample/audio.wav" ] || fail "comparison lost the audio after the caller removed its copy"
   done
   pass "fm-deepgram-stt: explicit true enables comparison over absent and false config without waiting"
@@ -926,7 +937,7 @@ test_desk_voice_retry_preserves_shadow_override() {
   [ ! -e "$saved" ] || fail "successful dictation retry should remove its source recording"
   wait_for_rows "$home" 1
   row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
-  sample=$home/data/stt-experiment/${row##*,}
+  sample=$home/data/stt-experiment/$(last_row_field "$home" sample)
   [ -f "$sample/audio.wav" ] || fail "retry removed the recording before its sample was copied"
 
   home=$(new_home retry-shadow-false)
@@ -940,6 +951,279 @@ test_desk_voice_retry_preserves_shadow_override() {
   assert_equals "$expected" "$out" "false override reaches retry"
   [ ! -e "$home/data/stt-experiment" ] || fail "retry ignored explicit false"
   pass "fm-desk-voice retry: explicit shadow overrides survive retry and samples precede source removal"
+}
+
+# --- ElevenLabs speech-to-text and text-to-speech -----------------------------
+
+EL_BODY='{"language_code":"en","text":"elevenlabs heard this","words":[]}'
+
+# A curl stand-in for ElevenLabs: logs argv and the auth config it was handed,
+# and answers <body> with <http-code>.
+install_el_curl() {  # <home> <http-code> <body>
+  local home=$1 code=$2
+  printf '%s' "$3" > "$home/el-body"
+  cat > "$home/el-curl" <<SH
+#!/usr/bin/env bash
+out=
+prev=
+for a in "\$@"; do
+  [ "\$prev" != -o ] || out=\$a
+  [ "\$prev" != --config ] || cat "\$a" >> "$home/el-auth.log"
+  prev=\$a
+done
+printf 'el-argv: %s\n' "\$*" >> "$home/el-curl.log"
+cat "$home/el-body" > "\$out"
+printf '%s' "$code"
+SH
+  chmod +x "$home/el-curl"
+}
+
+el_stt() {  # <home> [args...]
+  local home=$1
+  shift
+  ELEVENLABS_API_KEY=super-secret-el-key FM_ELEVENLABS_CURL="$home/el-curl" \
+    FM_DEEPGRAM_CURL="$home/curl" FM_HOME="$home" "$STT" "$@"
+}
+
+test_elevenlabs_tts_helper() {
+  local home out status=0
+  home=$(new_home el-tts)
+  out=$(env -u ELEVENLABS_API_KEY "$EL_TTS" "hello" 2>&1) || status=$?
+  [ "$status" -eq 2 ] || fail "expected exit 2 without a key, got $status: $out"
+  assert_contains "$out" "ELEVENLABS_API_KEY is not set" "missing-key diagnostic"
+  out=$(ELEVENLABS_API_KEY=test-key-not-real "$EL_TTS" --dry-run -- "Checks are green." 2>&1) \
+    || fail "dry-run failed: $out"
+  assert_contains "$out" "voice=JBFqnCBsd6RMkjVDRZzb model=eleven_flash_v2_5" "documented defaults"
+  out=$(ELEVENLABS_API_KEY=test-key-not-real "$EL_TTS" --dry-run --voice abcXYZ_1-2 --model eleven_v3 -- "Hi." 2>&1) \
+    || fail "dry-run failed: $out"
+  assert_contains "$out" "voice=abcXYZ_1-2 model=eleven_v3" "voice and model options win"
+  status=0
+  out=$(ELEVENLABS_API_KEY=test-key-not-real "$EL_TTS" --dry-run --voice '../x?y' -- "Hi." 2>&1) || status=$?
+  [ "$status" -eq 2 ] || fail "a voice id that is not path-safe must exit 2, got $status"
+  install_el_curl "$home" 200 'mp3-bytes'
+  out=$(ELEVENLABS_API_KEY=super-secret-el-key FM_ELEVENLABS_CURL="$home/el-curl" \
+    "$EL_TTS" --to "$home/out.mp3" --model eleven_v3 -- "Captain, checks are green." 2>&1) || fail "tts failed: $out"
+  [ "$(cat "$home/out.mp3")" = mp3-bytes ] || fail "--to must hold the synthesized audio"
+  assert_contains "$(cat "$home/el-curl.log")" \
+    "https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb?output_format=mp3_44100_128" "the request URL"
+  assert_contains "$(cat "$home/el-curl.log")" '"model_id": "eleven_v3"' "the model reaches the body"
+  assert_contains "$(cat "$home/el-auth.log")" 'xi-api-key: super-secret-el-key' "the key travels as xi-api-key"
+  case "$(cat "$home/el-curl.log")" in *super-secret*) fail "key leaked into curl argv" ;; esac
+  install_el_curl "$home" 401 '{"detail":{"status":"invalid_api_key"}}'
+  status=0
+  out=$(ELEVENLABS_API_KEY=test-key-not-real FM_ELEVENLABS_CURL="$home/el-curl" \
+    "$EL_TTS" --to "$home/out2.mp3" -- "Hi." 2>&1) || status=$?
+  [ "$status" -eq 1 ] || fail "an HTTP failure must exit 1, got $status"
+  assert_contains "$out" "HTTP 401" "the status is reported"
+  [ ! -e "$home/out2.mp3" ] || fail "a failed synthesis must not leave audio behind"
+  pass "fm-elevenlabs-tts: defaults, options, the request and its failures, key kept out of argv"
+}
+
+test_stt_elevenlabs_primary() {
+  local home out log status=0
+  home=$(new_home stt-el)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'primary = elevenlabs\n' > "$home/config/stt"
+  printf '%s\n' 'Quillan' 'Zorbit Labs' 'pat dot example 1 => pat.example1' > "$home/config/stt-vocabulary"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_el_curl "$home" 200 '{"text":"Mail pat dot example 1 about Quillan."}'
+  out=$(el_stt "$home" "$home/clip.wav" 2>&1) || fail "elevenlabs stt failed: $out"
+  [ "$out" = "Mail pat.example1 about Quillan." ] || fail "the transcript must get the vocabulary rewrites: $out"
+  log=$(cat "$home/el-curl.log")
+  assert_contains "$log" "--url https://api.elevenlabs.io/v1/speech-to-text" "the speech-to-text endpoint"
+  assert_contains "$log" "--form-string model_id=scribe_v2" "default model"
+  assert_contains "$log" "--form-string keyterms=Quillan --form-string keyterms=Zorbit Labs --form" "key terms reach the request"
+  case "$log" in *keyterms=pat*) fail "a rewrite line became a key term: $log" ;; esac
+  assert_contains "$log" "file=@\"$home/clip.wav\"" "the audio is uploaded"
+  case "$log" in *super-secret*) fail "key leaked into curl argv" ;; esac
+  assert_contains "$(cat "$home/el-auth.log")" 'xi-api-key: super-secret-el-key' "the key travels as xi-api-key"
+  [ ! -e "$home/curl.log" ] || fail "Deepgram must not be called when ElevenLabs is the primary"
+  out=$(el_stt "$home" --json "$home/clip.wav") || fail "--json failed: $out"
+  [ "$out" = '{"text":"Mail pat dot example 1 about Quillan."}' ] || fail "--json must be the raw answer: $out"
+  printf 'primary = elevenlabs\nelevenlabs_model = scribe_v1\n' > "$home/config/stt"
+  el_stt "$home" "$home/clip.wav" >/dev/null 2>&1 || fail "configured model failed"
+  assert_contains "$(tail -n 1 "$home/el-curl.log")" "model_id=scribe_v1" "configured model"
+  out=$(env -u ELEVENLABS_API_KEY FM_ELEVENLABS_CURL="$home/el-curl" FM_HOME="$home" \
+    DEEPGRAM_API_KEY=test-key-not-real FM_DEEPGRAM_CURL="$home/curl" "$STT" "$home/clip.wav" 2>&1) || status=$?
+  [ "$status" -eq 2 ] || fail "a missing ElevenLabs key must exit 2 like a missing Deepgram key, got $status: $out"
+  assert_contains "$out" "ELEVENLABS_API_KEY is not set" "the missing key is named"
+  [ ! -e "$home/curl.log" ] || fail "a missing ElevenLabs key must not switch to Deepgram"
+  install_el_curl "$home" 500 '{"detail":"busy"}'
+  status=0
+  out=$(el_stt "$home" "$home/clip.wav" 2>&1) || status=$?
+  [ "$status" -eq 1 ] || fail "an ElevenLabs failure must exit 1, got $status: $out"
+  assert_contains "$out" "HTTP 500" "the status is reported"
+  pass "fm-deepgram-stt: primary = elevenlabs transcribes through Scribe with key terms and rewrites"
+}
+
+test_elevenlabs_stt_key_terms_follow_its_limits() {
+  local home i terms=() log
+  home=$(new_home el-terms)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'primary = elevenlabs\n' > "$home/config/stt"
+  for i in $(seq 1 150); do terms+=("term$i"); done
+  printf '%s\n' 'one two three four five six' "$(printf 'x%.0s' $(seq 1 50))" 'a<b' 'brace{x}' 'back\slash' \
+    'Fine Term' "${terms[@]}" > "$home/config/stt-vocabulary"
+  install_el_curl "$home" 200 "$EL_BODY"
+  el_stt "$home" "$home/clip.wav" >/dev/null 2>&1 || fail "stt failed"
+  log=$(cat "$home/el-curl.log")
+  [ "$(printf '%s' "$log" | grep -o 'keyterms=' | wc -l | tr -d ' ')" = 100 ] || fail "key terms must stop at 100"
+  assert_contains "$log" "keyterms=Fine Term --form-string keyterms=term1 " "accepted terms keep their order"
+  case "$log" in *six*|*xxxxx*|*'a<b'*|*brace*|*slash*|*term100*) fail "a term ElevenLabs refuses was sent: $log" ;; esac
+  pass "fm-elevenlabs-stt: key terms ElevenLabs would refuse are skipped and at most 100 are sent"
+}
+
+# Expect `fm-deepgram-stt.sh --ready` in <home> to print <want> and exit <status>.
+check_stt_ready() {  # <home> <want> <status> [env...]
+  local home=$1 want=$2 want_status=$3 out status=0
+  shift 3
+  out=$(env -u DEEPGRAM_API_KEY -u ELEVENLABS_API_KEY "$@" FM_HOME="$home" "$STT" --ready 2>&1) || status=$?
+  [ "$status" -eq "$want_status" ] || fail "--ready: expected exit $want_status, got $status: $out"
+  assert_contains "$out" "$want" "--ready output"
+}
+
+test_stt_ready_reports_the_selected_engine() {
+  local home
+  home=$(new_home stt-ready)
+  check_stt_ready "$home" "deepgram no-key" 2
+  check_stt_ready "$home" "deepgram ready" 0 DEEPGRAM_API_KEY=k
+  printf 'primary = elevenlabs\n' > "$home/config/stt"
+  check_stt_ready "$home" "elevenlabs no-key" 2 DEEPGRAM_API_KEY=k
+  check_stt_ready "$home" "elevenlabs ready" 0 ELEVENLABS_API_KEY=k
+  printf 'ELEVENLABS_API_KEY=from-dotenv\n' > "$home/.env"
+  check_stt_ready "$home" "elevenlabs ready" 0 FM_DEEPGRAM_ENV_FILE="$home/.env"
+  printf 'primary = local\n' > "$home/config/stt"
+  check_stt_ready "$home" "local ready" 0
+  printf 'primary = whisper\n' > "$home/config/stt"
+  check_stt_ready "$home" "must be deepgram, local or elevenlabs" 2
+  pass "fm-deepgram-stt --ready: names the engine and whether its key is present"
+}
+
+test_stt_shadow_with_elevenlabs() {
+  local home out row header archived
+  home=$(new_home stt-shadow-el)
+  printf 'RIFF' > "$home/clip.wav"
+  printf 'shadow = true\nshadow_with = elevenlabs\n' > "$home/config/stt"
+  mkdir -p "$home/data/stt-experiment"
+  printf '%s\n' \
+    'timestamp,source,audio_seconds,primary,deepgram_ms,local_ms,deepgram_status,local_status,winner,reason,judge_model,sample' \
+    '2026-01-01T00:00:00Z,old,1.0,deepgram,1,2,ok,ok,tie,same,,samples/old' > "$home/data/stt-experiment/results.csv"
+  install_stt_curl "$home" 200 "$DG_BODY"
+  install_el_curl "$home" 200 '{"text":"local elevenlabs heard this"}'
+  install_local_curl "$home" "local heard this"
+  install_judges "$home"
+  out=$(ELEVENLABS_API_KEY=test-key-not-real FM_ELEVENLABS_CURL="$home/el-curl" stt_mocked "$home" "$home/clip.wav") \
+    || fail "stt failed: $out"
+  [ "$out" = "deepgram heard this" ] || fail "the primary transcript must be unchanged: $out"
+  # The seeded older row already counts as one, so wait for the new sample's row.
+  wait_for_content "$home/data/stt-experiment/results.csv" ",samples/2" "the shadow row"
+  header=$(head -n 1 "$home/data/stt-experiment/results.csv")
+  assert_contains "$header" ",judge_model,sample,elevenlabs_ms,elevenlabs_status" "the widened header"
+  row=$(tail -n 1 "$home/data/stt-experiment/results.csv")
+  [ "$(last_row_field "$home" elevenlabs_status)" = ok ] || fail "ElevenLabs status recorded: $row"
+  [ -n "$(last_row_field "$home" elevenlabs_ms)" ] || fail "ElevenLabs time recorded: $row"
+  [ -z "$(last_row_field "$home" local_status)" ] || fail "the local engine took no part: $row"
+  [ "$(last_row_field "$home" winner)" = elevenlabs ] || fail "the judged winner is unblinded: $row"
+  [ ! -e "$home/local-curl.log" ] || fail "the local engine must not run when shadow_with names ElevenLabs"
+  [ "$(cat "$home/data/stt-experiment/$(last_row_field "$home" sample)/elevenlabs.txt")" = "local elevenlabs heard this" ] \
+    || fail "the ElevenLabs transcript is kept"
+  archived=$(find "$home/data/stt-experiment" -maxdepth 1 -name 'results-*.csv')
+  [ -n "$archived" ] || fail "the older results file must be renamed aside"
+  assert_contains "$(cat "$archived")" "samples/old" "the older rows are kept intact"
+  [ "$(wc -l < "$home/data/stt-experiment/results.csv" | tr -d ' ')" = 2 ] || fail "the new file holds one header and one row"
+  printf 'shadow = true\nshadow_with = deepgram\n' > "$home/config/stt"
+  stt_mocked "$home" "$home/clip.wav" >/dev/null || fail "stt failed"
+  wait_for_rows "$home" 2
+  [ "$(last_row_field "$home" local_status)" = ok ] || fail "a shadow_with naming the primary falls back to the default"
+  assert_contains "$(cat "$home/data/stt-experiment/shadow.log")" "shadow_with must name" "the bad setting is reported"
+  pass "fm-stt-shadow: shadow_with = elevenlabs compares with ElevenLabs and an older CSV is set aside"
+}
+
+install_elevenlabs_tts() {  # <home> [fail]
+  local home=$1 rc=0
+  [ -z "${2:-}" ] || rc=1
+  cat > "$home/elevenlabs-tts" <<SH
+#!/usr/bin/env bash
+printf 'mock-elevenlabs: %s\n' "\$*" >> "$home/elevenlabs.log"
+[ "$rc" -eq 0 ] || exit 1
+out=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    --to) out=\$2; shift 2 ;;
+    --) shift; break ;;
+    *) shift ;;
+  esac
+done
+[ -z "\$out" ] || printf 'el' > "\$out"
+SH
+  chmod +x "$home/elevenlabs-tts"
+}
+
+speak_el() {  # <home> <args...>
+  local home=$1
+  shift
+  env -u DEEPGRAM_API_KEY -u ELEVENLABS_API_KEY \
+    FM_HOME="$home" \
+    FM_DEEPGRAM_ENV_FILE="$home/.env" \
+    FM_SPEAK_SHAPER="$home/shaper" \
+    FM_SPEAK_SAY="${FM_TEST_SAY:-$home/speaker}" \
+    FM_SPEAK_DEEPGRAM_TTS="$home/deepgram-tts" \
+    FM_SPEAK_ELEVENLABS_TTS="$home/elevenlabs-tts" \
+    FM_SPEAK_DEEPGRAM_REGISTER= \
+    FM_DEEPGRAM_AFPLAY="$home/afplay" \
+    "$SPEAK" "$@"
+}
+
+test_speak_uses_elevenlabs_when_selected() {
+  local home out status=0
+  home=$(new_home el-speak "enabled = true" "speaker = elevenlabs" \
+    "elevenlabs_voice = voiceABC" "elevenlabs_model = eleven_v3")
+  printf 'DEEPGRAM_API_KEY=test-key-not-real\nELEVENLABS_API_KEY=test-key-not-real\n' > "$home/.env"
+  install_shaper "$home"
+  install_speaker "$home"
+  install_deepgram_tts_ok "$home"
+  install_elevenlabs_tts "$home"
+  install_afplay "$home"
+  out=$(speak_el "$home" "The scout report is done." 2>&1) || fail "speak failed: $out"
+  wait_for_content "$home/elevenlabs.log" "scout report" "ElevenLabs should have received the line"
+  wait_for_file "$home/afplay.log" "afplay should have played the ElevenLabs audio"
+  assert_contains "$(cat "$home/elevenlabs.log")" "--voice voiceABC --model eleven_v3 --to " \
+    "config/speak voice and model reach the helper"
+  [ ! -f "$home/deepgram.log" ] || fail "Deepgram must not run when ElevenLabs is selected"
+  [ ! -f "$home/spoken.log" ] || fail "say must not run when ElevenLabs succeeds"
+  out=$(speak_el "$home" --speaker) || fail "--speaker failed"
+  [ "$out" = elevenlabs ] || fail "--speaker must name ElevenLabs: $out"
+  printf 'DEEPGRAM_API_KEY=test-key-not-real\n' > "$home/.env"
+  out=$(speak_el "$home" --speaker) || fail "--speaker failed"
+  [ "$out" = say ] || fail "--speaker without the ElevenLabs key must name say: $out"
+  out=$(FM_TEST_SAY="$home/missing" speak_el "$home" --speaker) || fail "--speaker failed"
+  [ "$out" = none ] || fail "--speaker with no say and no key must name none: $out"
+  rm -f "$home/elevenlabs.log"
+  out=$(speak_el "$home" "Checks passed on the first run." 2>&1) || fail "speak failed: $out"
+  assert_contains "$out" "ELEVENLABS_API_KEY is not set" "a missing key with ElevenLabs selected is named"
+  wait_for_content "$home/spoken.log" "Checks passed" "say should have spoken the fallback"
+  [ ! -f "$home/elevenlabs.log" ] || fail "ElevenLabs must not run without its key"
+  [ ! -f "$home/deepgram.log" ] || fail "a missing ElevenLabs key must not switch to Deepgram"
+  printf 'speaker = whisper\n' >> "$home/config/speak"
+  out=$(speak_el "$home" "Hello." 2>&1) || status=$?
+  [ "$status" -eq 1 ] || fail "an unknown speaker must exit 1, got $status: $out"
+  assert_contains "$out" "speaker must be deepgram or elevenlabs" "the bad value is named"
+  pass "fm-speak: speaker = elevenlabs speaks through ElevenLabs, falls back to say without its key"
+}
+
+test_speak_falls_back_to_say_when_elevenlabs_fails() {
+  local home out
+  home=$(new_home el-speak-fail "enabled = true" "speaker = elevenlabs")
+  printf 'ELEVENLABS_API_KEY=test-key-not-real\n' > "$home/.env"
+  install_shaper "$home"
+  install_speaker "$home"
+  install_elevenlabs_tts "$home" fail
+  install_afplay "$home"
+  out=$(speak_el "$home" "The finances fix is green." 2>&1) || fail "speak failed: $out"
+  assert_contains "$out" "ElevenLabs TTS failed; falling back to macOS say" "the failure is named"
+  wait_for_content "$home/spoken.log" "finances fix" "say should have spoken the fallback"
+  assert_contains "$(cat "$home/elevenlabs.log")" "--voice  --model  --to" "unset voice and model leave the helper defaults"
+  pass "fm-speak: an ElevenLabs failure falls back to say"
 }
 
 # --- desk floater launcher -------------------------------------------------
@@ -3450,6 +3734,11 @@ test_stt_shadow_override_true_beats_config
 test_stt_shadow_override_false_beats_config
 test_stt_shadow_invalid_override_is_diagnostic_only
 test_desk_voice_retry_preserves_shadow_override
+test_elevenlabs_tts_helper
+test_stt_elevenlabs_primary
+test_elevenlabs_stt_key_terms_follow_its_limits
+test_stt_ready_reports_the_selected_engine
+test_stt_shadow_with_elevenlabs
 test_floater_help_and_option_refusal
 test_floater_signs_with_a_stable_identity
 test_floater_build_only_leaves_the_launched_app_alone
@@ -3464,6 +3753,8 @@ test_speak_asks_for_the_voice_list_once_per_confirmed_voice
 test_speak_leaves_no_voice_list_behind_when_the_register_refuses
 test_speak_does_not_swap_to_deepgram_when_say_fails
 test_speak_falls_back_to_say_when_deepgram_fails
+test_speak_uses_elevenlabs_when_selected
+test_speak_falls_back_to_say_when_elevenlabs_fails
 test_desk_voice_deliver_pending_drain
 test_desk_voice_keeps_a_recording_until_its_words_are_delivered
 test_desk_voice_retry_of_a_ten_minute_recording_delivers_every_word

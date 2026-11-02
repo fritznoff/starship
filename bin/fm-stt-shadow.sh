@@ -8,10 +8,15 @@
 #   fm-stt-shadow.sh --help
 #
 # <sample-dir> holds audio.<ext> and <primary>.json, the primary provider's raw
-# answer. The other provider (deepgram or local) writes <other>.json beside it,
-# its transcript is compared with the primary's raw transcript (vocabulary
-# rewrites are not applied to either side), and the sample keeps
-# deepgram.txt, local.txt and judge.txt for re-judging later.
+# answer. The other provider writes <other>.json beside it, its transcript is
+# compared with the primary's raw transcript (vocabulary rewrites are not
+# applied to either side), and the sample keeps <primary>.txt, <other>.txt and
+# judge.txt for re-judging later.
+#
+# The other provider is `shadow_with` in config/stt (deepgram, local or
+# elevenlabs). Absent, it is local when the primary is deepgram and deepgram
+# otherwise. A value naming the primary itself, or no provider at all, is
+# reported in shadow.log and the default is used instead.
 #
 # Samples take turns on the other provider (a lock in data/stt-experiment/),
 # and its time is measured from the start of its turn.
@@ -30,10 +35,13 @@
 #
 # Row (data/stt-experiment/results.csv, header written once): timestamp, source,
 # audio_seconds, primary, deepgram_ms, local_ms, deepgram_status,
-# local_status, winner, reason, judge_model, sample. A status is ok, down (the
-# local engine is not running), or error; winner is deepgram, local, tie, or
-# none when no judgement was made. source is <caller>, reduced to the name of
-# the script or program it runs (unknown when absent).
+# local_status, winner, reason, judge_model, sample, elevenlabs_ms,
+# elevenlabs_status. A provider that took no part leaves its time and status
+# empty. A status is ok, down (the local engine is not running), or error;
+# winner is a provider name, tie, or none when no judgement was made. source is
+# <caller>, reduced to the name of the script or program it runs (unknown when
+# absent). A results.csv started under an older header is first renamed aside
+# to results-<UTC time>.csv, so no file mixes two row shapes.
 #
 # Exit: 0 once a row is written (whatever it records), 2 on bad usage.
 set -eu
@@ -53,10 +61,11 @@ fi
 
 exec python3 - "$1" "$2" "$3" "${4:-}" "$SCRIPT_DIR" \
   "$FM_HOME/config/stt-vocabulary" "$(fm_stt_setting judge auto)" \
-  "$(fm_stt_setting judge_effort_haiku medium)" "$(fm_stt_setting judge_effort_luna xhigh)" <<'PY'
+  "$(fm_stt_setting judge_effort_haiku medium)" "$(fm_stt_setting judge_effort_luna xhigh)" \
+  "$(fm_stt_setting shadow_with '')" <<'PY'
 import csv, datetime, fcntl, glob, json, os, random, subprocess, sys, tempfile, time
 
-sample, primary, primary_ms, source, bindir, vocab_path, judge_pref, haiku_effort, luna_effort = sys.argv[1:10]
+sample, primary, primary_ms, source, bindir, vocab_path, judge_pref, haiku_effort, luna_effort, shadow_with = sys.argv[1:11]
 other = "local" if primary == "deepgram" else "deepgram"
 # A caller command line names its script when it runs one, else its program.
 words = source.split()
@@ -67,6 +76,11 @@ audio = (glob.glob(os.path.join(sample, "audio.*")) or [""])[0]
 
 def note(msg):
     print(f"fm-stt-shadow: {os.path.basename(sample)}: {msg}", file=sys.stderr)
+
+if shadow_with in ("deepgram", "local", "elevenlabs") and shadow_with != primary:
+    other = shadow_with
+elif shadow_with:
+    note(f"shadow_with must name deepgram, local or elevenlabs other than the primary; comparing with {other}")
 
 def text_of(path):
     try:
@@ -205,15 +219,40 @@ else:
 
 ms = {primary: primary_ms, other: str(other_ms)}
 row = [datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), source, duration(),
-       primary, ms["deepgram"], ms["local"], status["deepgram"], status["local"],
-       winner, reason, judge_model, os.path.relpath(sample, root)]
+       primary, ms.get("deepgram", ""), ms.get("local", ""), status.get("deepgram", ""), status.get("local", ""),
+       winner, reason, judge_model, os.path.relpath(sample, root),
+       ms.get("elevenlabs", ""), status.get("elevenlabs", "")]
 header = ["timestamp", "source", "audio_seconds", "primary", "deepgram_ms", "local_ms",
-          "deepgram_status", "local_status", "winner", "reason", "judge_model", "sample"]
+          "deepgram_status", "local_status", "winner", "reason", "judge_model", "sample",
+          "elevenlabs_ms", "elevenlabs_status"]
 results = os.path.join(root, "results.csv")
-fd = os.open(results, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-with os.fdopen(fd, "a", newline="", encoding="utf-8") as fh:
-    fcntl.flock(fh, fcntl.LOCK_EX)
+
+def open_results():
+    # Locked, and still the file at that path: a writer that waited on a file
+    # another writer renamed aside opens the new one instead.
+    while True:
+        fd = os.open(results, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        fh = os.fdopen(fd, "a+", newline="", encoding="utf-8")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            same = os.stat(results).st_ino == os.fstat(fd).st_ino
+        except FileNotFoundError:
+            same = False
+        if same:
+            return fh
+        fh.close()
+
+fh = open_results()
+fh.seek(0)
+first = fh.readline().rstrip("\r\n")
+if first and first != ",".join(header):
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    os.rename(results, os.path.join(root, f"results-{stamp}.csv"))
+    fh.close()
+    fh = open_results()
+with fh:
     writer = csv.writer(fh, lineterminator="\n")
+    fh.seek(0, os.SEEK_END)
     if fh.tell() == 0:
         writer.writerow(header)
     writer.writerow(row)

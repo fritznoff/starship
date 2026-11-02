@@ -3,7 +3,8 @@
 # its replies out of this Mac's speaker. Without this file it stays silent.
 # `key = value` lines; unknown keys are refused. See docs/configuration.md
 # "Desk voice-out" for what it needs: a spoken register owner named below, and
-# either DEEPGRAM_API_KEY in .env or a macOS voice below.
+# either DEEPGRAM_API_KEY (or ELEVENLABS_API_KEY with speaker = elevenlabs) in
+# .env or a macOS voice below.
 enabled = true
 
 # The spoken register owner: an executable exposing `--dry-run <text>`, as an
@@ -14,5 +15,12 @@ enabled = true
 # shaper = projects/<voice-project>/bin/announce
 
 # Optional macOS `say` voice; naming one speaks through `say` instead of
-# Deepgram. Leave it commented out to use Deepgram when the key is set.
+# Deepgram or ElevenLabs. Leave it commented out to use the cloud speaker below
+# when its key is set.
 # voice = Ava
+
+# Optional cloud speaker: deepgram (the default) or elevenlabs, with an
+# optional ElevenLabs voice id and model.
+# speaker = elevenlabs
+# elevenlabs_voice = JBFqnCBsd6RMkjVDRZzb
+# elevenlabs_model = eleven_flash_v2_5

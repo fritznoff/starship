@@ -11,6 +11,7 @@
 #   fm-speak.sh --mute | --unmute | --muted
 #   fm-speak.sh --enabled
 #   fm-speak.sh --available
+#   fm-speak.sh --speaker
 #   fm-speak.sh --volume [<percent>]
 #   fm-speak.sh --help
 #
@@ -41,8 +42,14 @@
 # Config is `key = value` lines; unknown keys are refused rather than ignored.
 #   enabled   true to arm this home (default false)
 #   voice     optional `say` voice name (default: the system voice). Setting it
-#             also selects `say` as the speaker, since Deepgram cannot speak in
-#             it - see SPEAKER PREFERENCE below
+#             also selects `say` as the speaker, since neither cloud speaker
+#             can speak in it - see SPEAKER PREFERENCE below
+#   speaker   the cloud speaker that leads when no `voice` is named: deepgram
+#             (the default) or elevenlabs
+#   elevenlabs_voice
+#             ElevenLabs voice id (default: bin/fm-elevenlabs-tts.sh's)
+#   elevenlabs_model
+#             ElevenLabs model id (default: bin/fm-elevenlabs-tts.sh's)
 #   shaper    the register owner: an executable exposing the
 #             `--dry-run <text>` contract, as an absolute path or one relative
 #             to this home, that reads its spoken budget from the
@@ -53,12 +60,16 @@
 # SPEAKER PREFERENCE: naming a voice picks the speaker, because only one of them
 # can honour it. With a non-empty `voice` in config/speak the shaped line goes to
 # macOS `say` in that voice; Deepgram's voice comes from DEEPGRAM_TTS_MODEL and
-# ignores the key entirely, so a home that asked for a particular voice and got
-# Deepgram would simply not be heard in it. With no voice named, DEEPGRAM_API_KEY
-# in the environment or in this home's gitignored .env sends the line to Deepgram
-# Aura first (bin/fm-deepgram-tts.sh). Either way the other speaker remains the
-# fallback: Deepgram when there is no usable `say` binary, `say` when the key is
-# absent or Deepgram fails. That choice is made once, before the handoff, and is
+# ElevenLabs' from `elevenlabs_voice`, so a home that asked for a particular
+# `say` voice and got either would simply not be heard in it. With no voice
+# named, the cloud speaker `speaker` selects goes first: Deepgram Aura
+# (bin/fm-deepgram-tts.sh) when DEEPGRAM_API_KEY is in the environment or in this
+# home's gitignored .env, or, with `speaker = elevenlabs`, ElevenLabs
+# (bin/fm-elevenlabs-tts.sh) when ELEVENLABS_API_KEY is. Either way the other
+# speaker remains the fallback: the cloud speaker when there is no usable `say`
+# binary, `say` when its key is absent or it fails. An ElevenLabs speaker chosen
+# without its key says so on stderr each time it falls back; the other cloud
+# speaker is never tried instead. That choice is made once, before the handoff, and is
 # never revisited afterwards: a speaker that fails once it has the line is not
 # re-spoken through the other one, because paid synthesis is not this script's
 # answer to a local speaker problem. A named voice is checked against the voices
@@ -66,12 +77,11 @@
 # voice it does not have and still exits 0 - so an unavailable voice would
 # otherwise be neither heard as asked for nor reported anywhere. A voice this
 # machine does not have is refused on stderr with exit 1, never quietly spoken in
-# some other voice and never swapped to Deepgram. A voice confirmed once is
+# some other voice and never swapped to a cloud speaker. A voice confirmed once is
 # remembered in state/speak-voice-confirmed, so only the first spoken line of a
 # home pays for that question; renaming the voice in config/speak asks it again.
-# The key is never logged, and this preference is about speech out only - the desk
-# floater's ears still use the same key for Deepgram transcription
-# (docs/desk-floater.md).
+# Keys are never logged, and this preference is about speech out only - the desk
+# floater's ears pick their engine in config/stt (docs/desk-floater.md).
 #
 # DESK SPOKEN BOUND: the register owner's own default budget is tuned for the
 # glasses, about eight seconds, and it truncates the shaped line before any
@@ -158,6 +168,12 @@
 #   --available prints `available` if the resolved register owner is executable,
 #             or `unavailable` otherwise, without invoking it or reading any
 #             config key but `shaper`.
+#   --speaker prints the speaker an ordinary line would be handed to now, by
+#             SPEAKER PREFERENCE: `say`, `deepgram`, `elevenlabs`, or `none`
+#             when there is no usable `say` and no key for the cloud speaker.
+#             It checks only binaries and keys - never a network call, the
+#             register owner, `enabled` or the mute - so a home that chose
+#             `speaker = elevenlabs` and prints `say` is missing its key.
 #   --volume [<percent>]
 #             prints, or with a whole number from 0 to 200 sets, the spoken
 #             voice's level as a percentage of the Mac's own output volume: 100
@@ -181,13 +197,13 @@
 # shaped, so a refused or unshaped sentence can never be replayed, and a replay
 # is never shaped a second time. Numbers only grow; the newest 10 replies
 # are kept and older ones are pruned whenever a new one is kept. A muted line is
-# neither shaped nor kept. When Deepgram synthesized the line, its audio is kept
+# neither shaped nor kept. When a cloud speaker synthesized the line, its audio is kept
 # beside the text, and a replay plays that audio straight away instead of paying
 # for the network synthesis again - that wait is what made a replay slow. A reply
 # with no kept audio (spoken by `say`, or kept before its audio was) is spoken
 # through the ordinary speaker choice, and audio synthesized for that replay is
 # kept for the next one. A named `voice` in config/speak always wins: kept
-# Deepgram audio is not in that voice, so it is not played for such a home.
+# cloud audio is not in that voice, so it is not played for such a home.
 #
 # Environment overrides, for tests and unusual layouts:
 #   FM_SPEAK_SHAPER    register owner exposing the `--dry-run <text>` contract
@@ -195,6 +211,9 @@
 #   FM_SPEAK_SAY       speech binary (default: /usr/bin/say)
 #   FM_SPEAK_DEEPGRAM_TTS
 #                      Deepgram TTS helper (default: $ROOT/bin/fm-deepgram-tts.sh)
+#   FM_SPEAK_ELEVENLABS_TTS
+#                      ElevenLabs TTS helper (default:
+#                      $ROOT/bin/fm-elevenlabs-tts.sh)
 #   FM_DEEPGRAM_AFPLAY audio player for Deepgram audio, kept audio and a `say`
 #                      line rendered at a set volume (default: /usr/bin/afplay;
 #                      where there is none and this home has the Windows desk
@@ -255,6 +274,7 @@ DEFAULT_SPEAKER_TIMEOUT=60
 SHAPER="${FM_SPEAK_SHAPER:-}"
 SAY_BIN="${FM_SPEAK_SAY:-/usr/bin/say}"
 DEEPGRAM_TTS="${FM_SPEAK_DEEPGRAM_TTS:-$ROOT/bin/fm-deepgram-tts.sh}"
+ELEVENLABS_TTS="${FM_SPEAK_ELEVENLABS_TTS:-$ROOT/bin/fm-elevenlabs-tts.sh}"
 # Inside WSL 2 with the Windows desk floater installed for this home, there is
 # no afplay and lines play through Windows instead (docs/desk-floater-windows.md).
 if [ -n "${FM_DEEPGRAM_AFPLAY:-}" ]; then
@@ -276,6 +296,9 @@ SPEAKER_TIMEOUT="${FM_SPEAK_TIMEOUT:-$DEFAULT_SPEAKER_TIMEOUT}"
 CFG_ENABLED=false
 CFG_VOICE=
 CFG_SHAPER=
+CFG_SPEAKER=deepgram
+CFG_ELEVENLABS_VOICE=
+CFG_ELEVENLABS_MODEL=
 
 # shellcheck source=bin/fm-deepgram-lib.sh
 . "$ROOT/bin/fm-deepgram-lib.sh"
@@ -324,6 +347,18 @@ load_config() {
         ;;
       shaper)
         CFG_SHAPER=$value
+        ;;
+      speaker)
+        case "$value" in
+          deepgram|elevenlabs) CFG_SPEAKER=$value ;;
+          *) die "speaker must be deepgram or elevenlabs: $value" ;;
+        esac
+        ;;
+      elevenlabs_voice)
+        CFG_ELEVENLABS_VOICE=$value
+        ;;
+      elevenlabs_model)
+        CFG_ELEVENLABS_MODEL=$value
         ;;
       *) die "unknown config key: $key" ;;
     esac
@@ -637,16 +672,58 @@ speak_say_detached() {  # <textfile>
   detach_speaker say_speaker "$1"
 }
 
-# Prefer Deepgram when a key is available. Synthesis is waited on under the
-# speaker watchdog (network only, --to file); playback is then detached so the
-# caller's turn is never held open by audio. Returns 0 when Deepgram accepted
-# the line, 1 when the caller should use `say`.
-speak_deepgram_or_fail() {  # <textfile>
-  local textfile=$1 key audio status=0 out err
-  key=$(fm_deepgram_api_key)
-  [ -n "$key" ] || return 1
-  [ -x "$DEEPGRAM_TTS" ] || {
-    note "Deepgram TTS helper is not executable: $DEEPGRAM_TTS; falling back to say"
+# The key of the cloud speaker config/speak selects, or nothing. Call after
+# load_config.
+cloud_key() {
+  if [ "$CFG_SPEAKER" = elevenlabs ]; then
+    fm_elevenlabs_api_key
+  else
+    fm_deepgram_api_key
+  fi
+}
+
+cloud_key_name() {
+  if [ "$CFG_SPEAKER" = elevenlabs ]; then printf 'ELEVENLABS_API_KEY'; else printf 'DEEPGRAM_API_KEY'; fi
+}
+
+# The speaker an ordinary line would be handed to now (--speaker).
+current_speaker() {
+  if [ -n "$CFG_VOICE" ] && [ -x "$SAY_BIN" ]; then
+    printf 'say\n'
+  elif [ -n "$(cloud_key)" ]; then
+    printf '%s\n' "$CFG_SPEAKER"
+  elif [ -x "$SAY_BIN" ]; then
+    printf 'say\n'
+  else
+    printf 'none\n'
+  fi
+}
+
+# Prefer the selected cloud speaker when its key is available. Synthesis is
+# waited on under the speaker watchdog (network only, --to file); playback is
+# then detached so the caller's turn is never held open by audio. Returns 0 when
+# the cloud speaker accepted the line, 1 when the caller should use `say`.
+speak_cloud_or_fail() {  # <textfile>
+  local textfile=$1 key audio status=0 out err name helper
+  local -a call
+  key=$(cloud_key)
+  if [ "$CFG_SPEAKER" = elevenlabs ]; then
+    name=ElevenLabs
+    helper=$ELEVENLABS_TTS
+    [ -n "$key" ] || {
+      note "speaker = elevenlabs but ELEVENLABS_API_KEY is not set (env or gitignored .env); falling back to say"
+      return 1
+    }
+    call=(env ELEVENLABS_API_KEY="$key" FM_HOME="$FM_HOME" "$helper"
+      --voice "$CFG_ELEVENLABS_VOICE" --model "$CFG_ELEVENLABS_MODEL")
+  else
+    name=Deepgram
+    helper=$DEEPGRAM_TTS
+    [ -n "$key" ] || return 1
+    call=(env DEEPGRAM_API_KEY="$key" FM_HOME="$FM_HOME" "$helper")
+  fi
+  [ -x "$helper" ] || {
+    note "$name TTS helper is not executable: $helper; falling back to say"
     return 1
   }
   audio=$(mktemp "${TMPDIR:-/tmp}/fm-speak-dg.XXXXXX") || return 1
@@ -655,15 +732,16 @@ speak_deepgram_or_fail() {  # <textfile>
   out=$(mktemp "${TMPDIR:-/tmp}/fm-speak-dg-out.XXXXXX") || { rm -f "$audio"; return 1; }
   err=$(mktemp "${TMPDIR:-/tmp}/fm-speak-dg-err.XXXXXX") || { rm -f "$audio" "$out"; return 1; }
   status=0
-  # Subshell keeps the key out of this shell; helper re-reads env/.env itself,
-  # and this home's FM_HOME is passed so it reads the voice from the same .env.
+  # The key is handed to the helper's environment rather than exported here,
+  # and this home's FM_HOME is passed so the Deepgram helper reads its voice
+  # from the same .env.
   run_bounded "$SPEAKER_TIMEOUT" "$out" "$err" \
-    env DEEPGRAM_API_KEY="$key" FM_HOME="$FM_HOME" "$DEEPGRAM_TTS" --to "$audio" -- "$(cat "$textfile")" \
+    "${call[@]}" --to "$audio" -- "$(cat "$textfile")" \
     || status=$?
   rm -f "$out" "$err"
   if [ "$status" -ne 0 ] || [ ! -s "$audio" ]; then
     rm -f "$audio"
-    note "Deepgram TTS failed; falling back to macOS say"
+    note "$name TTS failed; falling back to macOS say"
     return 1
   fi
   if [ ! -x "$AFPLAY_BIN" ]; then
@@ -988,9 +1066,9 @@ configured_voice_is_available() {
 speak_detached() {  # <textfile>
   local textfile=$1
   # A configured voice is a choice this script can only keep through `say`:
-  # Deepgram takes its voice from DEEPGRAM_TTS_MODEL and ignores the config key,
-  # so preferring Deepgram here would silently answer in a voice the home did not
-  # ask for. Deepgram stays the fallback for a host with no usable `say`.
+  # neither cloud speaker can speak in a `say` voice, so preferring one here
+  # would silently answer in a voice the home did not ask for. The cloud
+  # speaker stays the fallback for a host with no usable `say`.
   if [ -n "$CFG_VOICE" ] && [ -x "$SAY_BIN" ]; then
     if ! configured_voice_is_available; then
       rm -f "$textfile"
@@ -999,10 +1077,10 @@ speak_detached() {  # <textfile>
     speak_say_detached "$textfile"
     return 0
   fi
-  if speak_deepgram_or_fail "$textfile"; then
+  if speak_cloud_or_fail "$textfile"; then
     return 0
   fi
-  # Deepgram path leaves the textfile in place for the say fallback.
+  # The cloud path leaves the textfile in place for the say fallback.
   [ -f "$textfile" ] || return 0
   if [ ! -x "$SAY_BIN" ]; then
     rm -f "$textfile"
@@ -1054,8 +1132,8 @@ replay_reply() {  # [number]
     printf '%s\n' "$text"
     exit 0
   fi
-  if [ ! -x "$SAY_BIN" ] && [ -z "$(fm_deepgram_api_key)" ]; then
-    die "no speech binary at $SAY_BIN and no DEEPGRAM_API_KEY (set FM_SPEAK_SAY or the key)"
+  if [ ! -x "$SAY_BIN" ] && [ -z "$(cloud_key)" ]; then
+    die "no speech binary at $SAY_BIN and no $(cloud_key_name) (set FM_SPEAK_SAY or the key)"
   fi
   start_voice_list
   textfile=$(mktemp "${TMPDIR:-/tmp}/fm-speak-text.XXXXXX") || die "cannot create a temporary file"
@@ -1073,9 +1151,9 @@ main() {
     case "$1" in
       --help|-h) usage; exit 0 ;;
       --dry-run) dry_run=true; shift ;;
-      --stop|--repeat|--history|--replay|--mute|--unmute|--muted|--enabled|--available|--volume)
+      --stop|--repeat|--history|--replay|--mute|--unmute|--muted|--enabled|--available|--speaker|--volume)
         [ -z "$control" ] || {
-          note "only one of --stop, --repeat, --history, --replay, --mute, --unmute, --muted, --enabled, --available, --volume"
+          note "only one of --stop, --repeat, --history, --replay, --mute, --unmute, --muted, --enabled, --available, --speaker, --volume"
           exit 1
         }
         control=${1#--}
@@ -1118,6 +1196,10 @@ main() {
         load_config
         if [ "$CFG_ENABLED" = true ]; then printf 'enabled\n'; else printf 'disabled\n'; fi
         ;;
+      speaker)
+        load_config
+        current_speaker
+        ;;
       volume)
         if [ "$VOLUME_SET" = true ]; then
           set_volume "$VOLUME_ARG"
@@ -1159,8 +1241,8 @@ main() {
   [ -x "$SHAPER" ] \
     || die "the spoken register owner is not executable: $SHAPER (check 'shaper' in config/speak or FM_SPEAK_SHAPER)"
   if [ "$dry_run" != true ]; then
-    if [ ! -x "$SAY_BIN" ] && [ -z "$(fm_deepgram_api_key)" ]; then
-      die "no speech binary at $SAY_BIN and no DEEPGRAM_API_KEY (set FM_SPEAK_SAY or the key)"
+    if [ ! -x "$SAY_BIN" ] && [ -z "$(cloud_key)" ]; then
+      die "no speech binary at $SAY_BIN and no $(cloud_key_name) (set FM_SPEAK_SAY or the key)"
     fi
   fi
 

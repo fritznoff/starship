@@ -19,7 +19,8 @@ Exactly one fleet brain remains: the primary already running in this home.
 - No length limit on a message, and no recording lost: one that cannot be transcribed or delivered is saved and tried again (see [Recordings are never lost](#recordings-are-never-lost)).
 - Optional speak-back of Firstmate outcome lines through `bin/fm-speak.sh`,
   which speaks through macOS `say` when `config/speak` names a `voice` and
-  through Deepgram Aura otherwise, each the fallback for the other.
+  through Deepgram Aura or ElevenLabs otherwise, each cloud speaker falling
+  back to `say`.
 - Stop, Repeat and Mute controls for that spoken voice, a voice-volume level of its own, and a list of the recent spoken replies to hear any of them again.
 - A dictation mode that types what you say into whatever text box has the cursor, and sends it when that text box is the Firstmate chat.
 - Quick screenshots sent to Firstmate on their own or together with a voice message (see [Screenshots](#screenshots)).
@@ -28,6 +29,8 @@ Exactly one fleet brain remains: the primary already running in this home.
 
 1. Put `DEEPGRAM_API_KEY=...` in this home's gitignored `.env` (or export it).
    Never commit the key. Scripts never log it.
+   To use ElevenLabs instead, put `ELEVENLABS_API_KEY=...` there and select it with `primary = elevenlabs` in private `config/stt` for transcription and `speaker = elevenlabs` in `config/speak` for spoken replies; either choice works without the other ([speech-to-text provider](configuration.md#speech-to-text-provider-and-shadow-comparison-configstt), [desk voice-out](configuration.md#desk-voice-out-configspeak)).
+   `bin/fm-deepgram-stt.sh --ready` and `bin/fm-speak.sh --speaker` report which engine and speaker are in use and whether their keys are present.
 2. Opt the home into desk voice-out with private `config/speak`:
 
    ```
@@ -304,7 +307,7 @@ So `bin/fm-speak.sh` points that owner at
 That example keeps the same URL/path/id and decision refusals but sets the
 spoken budget to **30 seconds** and seven sentences (about 78 words at 2.6 wps).
 The budget belongs to the desk rather than to the speaker, so it is the same
-whichever speaker plays the line, macOS `say` or Deepgram Aura.
+whichever speaker plays the line, macOS `say`, Deepgram Aura or ElevenLabs.
 Two lines in one turn play one after another rather than overlapping.
 `bin/fm-speak.sh`'s header owns that serial lock.
 
@@ -315,6 +318,7 @@ has never been a Deepgram gate.
 
 TTS model default: `aura-2-thalia-en` (`DEEPGRAM_TTS_MODEL`, from the environment or this home's gitignored `.env`).
 STT model default: `nova-3` (`DEEPGRAM_STT_MODEL`, from the environment or this home's gitignored `.env`); per-home vocabulary in `config/stt-vocabulary`, see [docs/configuration.md](configuration.md#speech-to-text-vocabulary-configstt-vocabulary).
+ElevenLabs voice, TTS model and Scribe model come from `config/speak` and `config/stt`; the helpers' headers own their defaults.
 
 ## Non-goals
 

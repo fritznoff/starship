@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Transcribe one audio file with Deepgram (push-to-talk desk floater path), or
-# with the local engine when the home selects it.
+# with the local engine or ElevenLabs when the home selects it.
 #
 # Usage:
 #   fm-deepgram-stt.sh [--json] <audio-file>
+#   fm-deepgram-stt.sh --ready
 #   fm-deepgram-stt.sh --help
 #
 # Reads DEEPGRAM_API_KEY from the environment or the home's gitignored .env.
@@ -12,10 +13,20 @@
 #
 # Prints the transcript text on stdout (or the raw JSON with --json).
 #
-# Provider: `primary = deepgram` (the default) or `primary = local` in the
-# home's private config/stt (docs/configuration.md owns the file). Local hands
-# the file to bin/fm-stt-local.sh, needs no key, applies the same vocabulary
-# rewrites below, and --json prints the local engine's raw `{"text": ...}`.
+# Provider: `primary = deepgram` (the default), `primary = local` or
+# `primary = elevenlabs` in the home's private config/stt (docs/configuration.md
+# owns the file). Local hands the file to bin/fm-stt-local.sh and needs no key;
+# ElevenLabs hands it to bin/fm-elevenlabs-stt.sh with the vocabulary's key
+# terms and needs ELEVENLABS_API_KEY (environment or the home's gitignored
+# .env), refused with exit 2 when absent exactly as a missing Deepgram key is.
+# Both apply the same vocabulary rewrites below, and --json prints the engine's
+# raw answer, whose `text` field holds the transcript.
+#
+# --ready answers, without sending any audio, whether the selected engine can
+# run: it prints `<engine> ready` and exits 0, or `<engine> no-key` and exits 2
+# when that engine's key is absent. The local engine needs no key and is
+# reported ready without asking whether it is running. An invalid `primary`
+# exits 2 with the usual diagnostic.
 #
 # Shadow comparison: `FM_STT_SHADOW=true|false`, when set, overrides the
 # config/stt `shadow` setting for this invocation; otherwise that setting
@@ -35,6 +46,8 @@
 #     other model. Terms are URL-encoded and capped at Deepgram's documented
 #     limits (100 keywords; keyterms stop at a conservative estimate of the
 #     500-token budget), so an oversized list is trimmed rather than refused.
+#     With ElevenLabs the terms go to its `keyterms` field instead, under that
+#     helper's own limits. The local engine takes no hints.
 #   - A `heard => written` line rewrites the printed transcript after
 #     smart formatting: use the returned text as `heard`, including formatted
 #     numbers (e.g. `pat dot example 1 => pat.example1`). Matching ignores case
@@ -100,7 +113,8 @@ die() {
 
 # The vocabulary parser and transcript reader, run by python3 with argv: <mode> <vocab> ...
 # Modes: `query <model>` prints the extra query string (leading `&`, or
-# nothing); `transcript <json-file>` prints the rewritten transcript.
+# nothing); `terms` prints the key terms one per line; `transcript
+# <json-file>` prints the rewritten transcript.
 vocab_py() {
   cat <<'PY'
 import json, re, sys
@@ -197,10 +211,13 @@ def rewrite(text, rewrites):
     return "".join(pieces)
 
 mode, vocab = sys.argv[1], sys.argv[2]
-if mode == "query":
+if mode in ("query", "terms"):
     try:
         terms, _ = load_vocab(vocab)
-        sys.stdout.write(query(terms, sys.argv[3]))
+        if mode == "query":
+            sys.stdout.write(query(terms, sys.argv[3]))
+        else:
+            sys.stdout.write("".join(t + "\n" for t in terms))
     except Exception as exc:  # a bad vocabulary never breaks the request
         note(f"vocabulary skipped: {exc}")
     raise SystemExit(0)
@@ -208,7 +225,7 @@ if mode == "query":
 data = json.load(open(sys.argv[3], encoding="utf-8"))
 try:
     if isinstance(data, dict) and isinstance(data.get("text"), str):
-        text = data["text"]  # the local engine's OpenAI-shaped answer
+        text = data["text"]  # the local engine's or ElevenLabs' answer
     else:
         text = data["results"]["channels"][0]["alternatives"][0].get("transcript", "")
 except (KeyError, IndexError, TypeError) as exc:
@@ -229,8 +246,36 @@ vocab_query() {  # <vocab> <model>
   python3 -c "$(vocab_py)" query "$1" "$2" || true
 }
 
+vocab_terms() {  # <vocab>
+  python3 -c "$(vocab_py)" terms "$1" || true
+}
+
 extract_transcript() {  # <vocab> <json-file>
   python3 -c "$(vocab_py)" transcript "$1" "$2"
+}
+
+# The selected engine, validated. Refuses (exit 2) on an unknown one.
+selected_provider() {
+  local provider=${FM_STT_PROVIDER:-$(fm_stt_setting primary deepgram)}
+  case "$provider" in
+    deepgram|local|elevenlabs) printf '%s' "$provider" ;;
+    *) refuse "config/stt primary must be deepgram, local or elevenlabs: $provider" ;;
+  esac
+}
+
+report_ready() {
+  local provider key=x
+  provider=$(selected_provider) || exit 2
+  case "$provider" in
+    deepgram) key=$(fm_deepgram_api_key) ;;
+    elevenlabs) key=$(fm_elevenlabs_api_key) ;;
+  esac
+  if [ -n "$key" ]; then
+    printf '%s ready\n' "$provider"
+    exit 0
+  fi
+  printf '%s no-key\n' "$provider"
+  exit 2
 }
 
 # Hand one finished transcription to bin/fm-stt-shadow.sh, detached in its own
@@ -274,10 +319,11 @@ now_ms() {
 
 main() {
   local json_out=false audio='' key model http tmp ctype auth_cfg vocab extra bytes max_time
-  local provider started rc shadow
+  local provider started rc shadow terms
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help|-h) usage; exit 0 ;;
+      --ready) [ "$#" -eq 1 ] || refuse "--ready takes no other arguments"; report_ready ;;
       --json) json_out=true; shift ;;
       --) shift; break ;;
       -*) refuse "unexpected option: $1" ;;
@@ -289,7 +335,7 @@ main() {
   [ -f "$audio" ] || refuse "audio file not found: $audio"
   vocab=$FM_HOME/config/stt-vocabulary
   shadow=$(resolve_shadow)
-  provider=${FM_STT_PROVIDER:-$(fm_stt_setting primary deepgram)}
+  provider=$(selected_provider) || exit 2
   started=$(now_ms)
 
   case "$provider" in
@@ -304,7 +350,24 @@ main() {
       fi
       finish "$json_out" "$vocab" "$tmp" local "$audio" "$(( $(now_ms) - started ))" "$shadow"
       ;;
-    *) refuse "config/stt primary must be deepgram or local: $provider" ;;
+    elevenlabs)
+      tmp=$(mktemp "${TMPDIR:-/tmp}/fm-deepgram-stt.XXXXXX") || die "cannot create a temporary file"
+      terms=$(mktemp "${TMPDIR:-/tmp}/fm-deepgram-stt-terms.XXXXXX") || {
+        rm -f "$tmp"
+        die "cannot create a temporary file"
+      }
+      vocab_terms "$vocab" > "$terms"
+      rc=0
+      "$SCRIPT_DIR/fm-elevenlabs-stt.sh" --json --keyterms "$terms" "$audio" > "$tmp" || rc=$?
+      rm -f "$terms"
+      if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp"
+        # A missing key or file keeps its refusal; the helper already said why.
+        [ "$rc" -ne 2 ] || exit 2
+        die "ElevenLabs transcription failed (fm-elevenlabs-stt exit $rc)"
+      fi
+      finish "$json_out" "$vocab" "$tmp" elevenlabs "$audio" "$(( $(now_ms) - started ))" "$shadow"
+      ;;
   esac
 
   key=$(fm_deepgram_api_key)
