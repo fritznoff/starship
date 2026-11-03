@@ -262,7 +262,7 @@ test_contract_order_and_fleet_projection() {
   : > "$HOME_FIX/state/.afk"
 
   out=$(render Opus high 42 73 1.235 | strip_ansi)
-  [ "$out" = "⚓ Opus·high │ 🧠42% ⚡73% │ 1 working, 1 checking, 1 waiting, 1 waiting for you, 1 needs a look │ 👁 watching │ \$1.24 │ 💤AFK" ] \
+  [ "$out" = "⚓ Opus·high │ 🧠42% ⚡️73% │ 1 working, 1 checking, 1 waiting, 1 waiting for you, 1 needs a look │ 👁 watching │ \$1.24 │ 💤AFK" ] \
     || fail "canonical fields, order, fleet counts, or formatting drifted: $out"
   pass "status bar: canonical field order and fleet projection are stable"
 }
@@ -452,21 +452,21 @@ test_threshold_colors_and_placeholders() {
   # yellow at 71-85% (was under 30% remaining), red at 86%+ (was under 15%).
   out=$(render Opus high 70 69 0)
   assert_contains "$out" $'\033[92m🧠70%' "70% context used is not bright green"
-  assert_contains "$out" $'\033[92m⚡69%' "69% quota used is not bright green"
+  assert_contains "$out" $'\033[92m⚡️69%' "69% quota used is not bright green"
 
   out=$(render Opus high 71 70 0)
   assert_contains "$out" $'\033[93m🧠71%' "71% context used is not bright yellow"
-  assert_contains "$out" $'\033[93m⚡70%' "70% quota used is not bright yellow"
+  assert_contains "$out" $'\033[93m⚡️70%' "70% quota used is not bright yellow"
 
   out=$(render Opus high 85 70 0)
   assert_contains "$out" $'\033[93m🧠85%' "85% context used is not bright yellow"
 
   out=$(render Opus high 86 90 0)
   assert_contains "$out" $'\033[91m🧠86%' "86% context used is not bright red"
-  assert_contains "$out" $'\033[91m⚡90%' "90% quota used is not bright red"
+  assert_contains "$out" $'\033[91m⚡️90%' "90% quota used is not bright red"
 
   out=$(render Opus high -- -- -- | strip_ansi)
-  assert_contains "$out" '🧠-- ⚡--' "unavailable provider metrics do not use canonical placeholders"
+  assert_contains "$out" '🧠-- ⚡️--' "unavailable provider metrics do not use canonical placeholders"
   assert_contains "$out" '$--' "unavailable session cost does not use the canonical placeholder"
   pass "status bar: threshold colors and unavailable-metric placeholders are canonical"
 }
@@ -542,7 +542,7 @@ test_claude_payload_adapter_and_primary_guard() {
     FM_STATUS_BAR_NOW=1000 \
     "$ROOT/bin/fm-status-bar.sh" --adapter claude | strip_ansi)
   assert_contains "$out" '⚓ Claude Fable·high' "Claude adapter did not normalize model and effort"
-  assert_contains "$out" '🧠35% ⚡12%' "Claude adapter did not prefer context used over remaining"
+  assert_contains "$out" '🧠35% ⚡️12%' "Claude adapter did not prefer context used over remaining"
   assert_contains "$out" "\$2.35" "Claude adapter did not normalize session cost"
 
   input='{"model":{"display_name":"Claude Fable"},"effort":{"level":"high"},"context_window":{"remaining_percentage":64.8}}'
@@ -618,7 +618,7 @@ test_cursor_payload_adapter_and_primary_guard() {
   assert_contains "$out" '🧠42%' "Cursor adapter did not read context used"
   # Cursor's statusLine payload carries no quota and no cost, so both must stay
   # visibly unknown rather than being invented or silently zeroed.
-  assert_contains "$out" '⚡--' "Cursor adapter fabricated a provider quota it cannot observe"
+  assert_contains "$out" '⚡️--' "Cursor adapter fabricated a provider quota it cannot observe"
   assert_contains "$out" '$--' "Cursor adapter fabricated a session cost it cannot observe"
 
   out=$(printf '%s' "$input" | \
@@ -1475,7 +1475,7 @@ SH
   [ "$elapsed" -lt 3 ] \
     || fail "a provider cache miss stalled the refresh for ${elapsed}s instead of deferring the read"
   assert_contains "$out" '🧠20%' "a provider cache miss cost the row its context figure"
-  assert_contains "$out" '⚡--' "a provider cache miss did not render the unavailable placeholder"
+  assert_contains "$out" '⚡️--' "a provider cache miss did not render the unavailable placeholder"
   rm -f "$FAKEBIN/tmux"
   pass "status bar: a Codex provider cache miss renders a complete row instead of waiting on the read"
 }
@@ -1488,14 +1488,14 @@ test_quota_window_renders_only_where_a_window_is_known() {
   local count_file="$TMP_ROOT/codex-row-count"
 
   out=$(render Opus high 40 55 | strip_ansi)
-  assert_contains "$out" '⚡55%' "the Pi row lost its quota percentage"
-  assert_not_contains "$out" '⚡55%wk' "a window label was invented for an adapter with no window"
+  assert_contains "$out" '⚡️55%' "the Pi row lost its quota percentage"
+  assert_not_contains "$out" '⚡️55%wk' "a window label was invented for an adapter with no window"
 
   out=$(printf '%s' '{"model":{"display_name":"Claude"},"context_window":{"used_percentage":10},"rate_limits":{"five_hour":{"used_percentage":22}}}' |
     PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_FIX" FM_PRIMARY_HARNESS=claude \
       FM_STATUS_BAR_NOW=1000 "$ROOT/bin/fm-status-bar.sh" --adapter claude | strip_ansi)
-  assert_contains "$out" '⚡22%' "the Claude quota field changed shape"
-  assert_not_contains "$out" '⚡22%5h' "a window label was appended to the Claude contract"
+  assert_contains "$out" '⚡️22%' "the Claude quota field changed shape"
+  assert_not_contains "$out" '⚡️22%5h' "a window label was appended to the Claude contract"
 
   # The Codex companion's own row, end to end through the renderer, from a
   # fixture rollout and a fixture provider report. The tied label has to
@@ -1517,8 +1517,8 @@ test_quota_window_renders_only_where_a_window_is_known() {
     "$ROOT/bin/fm-status-bar.sh" \
       --adapter codex --model gpt-6-astra --effort high --follow-pane %42 | strip_ansi)
   assert_contains "$out" '🧠20%' "the Codex companion did not render its session's context"
-  assert_contains "$out" '⚡54%24h/wk' "the tied window label did not reach the Codex row"
-  assert_not_contains "$out" '⚡0%' "the rollout's foreign rate-limit block reached the row"
+  assert_contains "$out" '⚡️54%24h/wk' "the tied window label did not reach the Codex row"
+  assert_not_contains "$out" '⚡️0%' "the rollout's foreign rate-limit block reached the row"
   rm -f "$FAKEBIN/tmux"
   pass "status bar: the quota window is rendered only by adapters that actually know one"
 }

@@ -487,7 +487,7 @@ render_once() {
   fi
 
   if [ "$QUOTA_USED" = -- ]; then
-    quota_part="${D}⚡--${X}"
+    quota_part="${D}⚡️--${X}"
   else
     quota_color=$G
     [ "$QUOTA_USED" -lt 70 ] || quota_color=$Y
@@ -495,9 +495,9 @@ render_once() {
     # The window is part of the metric, not decoration: the same percentage
     # means something different against a five-hour allowance than against a
     # weekly one, so an adapter that knows its window always names it.
-    quota_part="${quota_color}⚡${QUOTA_USED}%${X}"
+    quota_part="${quota_color}⚡️${QUOTA_USED}%${X}"
     [ -z "$QUOTA_WINDOW" ] \
-      || quota_part="${quota_color}⚡${QUOTA_USED}%${X}${D}${QUOTA_WINDOW}${X}"
+      || quota_part="${quota_color}⚡️${QUOTA_USED}%${X}${D}${QUOTA_WINDOW}${X}"
   fi
 
   # The fleet and supervision fields speak plain words, because the captain

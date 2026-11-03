@@ -1048,7 +1048,7 @@ Machine sleep and fleet failure were ruled out (`pmset` last real sleep 2026-07-
 ───…─── FIRSTMATE ──
 ❯
 ───…───
-  ⚓ Opus 4.8·high │ 🧠67% ⚡14% │ …
+  ⚓ Opus 4.8·high │ 🧠67% ⚡️14% │ …
   ⏵⏵ bypass permissions on · 1 shell · ← for agents
 ```
 

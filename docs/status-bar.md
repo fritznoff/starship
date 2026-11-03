@@ -8,7 +8,7 @@ This file is the single owner of the Firstmate primary status-bar contract.
 After ANSI styling is removed, every renderer uses this field order:
 
 ```text
-⚓ <model>·<effort> [<account-role>] │ 🧠<context-used> ⚡<provider-quota-used> │ <workers> │ 👁 <supervision> │ $<session-cost> │ 💤<afk> [🔔/🔕]
+⚓ <model>·<effort> [<account-role>] │ 🧠<context-used> ⚡️<provider-quota-used> │ <workers> │ 👁 <supervision> │ $<session-cost> │ 💤<afk> [🔔/🔕]
 ```
 
 The separator is one space, a dim `│`, and one space.
@@ -20,7 +20,7 @@ Width-constrained surfaces clip or truncate the canonical line without wrapping 
 | `⚓ model·effort` | The active model and reasoning or thinking effort reported by the orchestrator. | `--` for either unavailable value. |
 | `[account-role]` | A compact role word for the vendor account this primary is running on, attached to the model identity rather than forming its own group. | Omitted entirely when the account is unknown. |
 | `🧠 context` | The integer percentage of the model context window already used. | `--` when the orchestrator does not expose current context use. |
-| `⚡ quota` | The integer percentage of the provider's binding quota window already used, immediately followed by a dim token naming the window or windows that bind it when the adapter knows them. | `--` when the provider or orchestrator does not expose quota, or exposes a figure whose windows cannot all be named. |
+| `⚡️ quota` | The integer percentage of the provider's binding quota window already used, immediately followed by a dim token naming the window or windows that bind it when the adapter knows them. | `--` when the provider or orchestrator does not expose quota, or exposes a figure whose windows cannot all be named. |
 | `workers` | Plain-word counts, in this order and each shown only when nonzero, joined by commas: `N working`, `N checking`, `N waiting`, `N waiting for you`, `N needs a look` (`N need a look` when more than one), and `N stopped`, as in `1 working, 1 waiting for you`. | Dim `workers unknown` only while no good fleet reading exists; a last good reading that is no longer current keeps its words, followed by a dim age such as `(10m ago)`; dim `N tasks, state unknown` (`1 task, state unknown`) when the reading is known, every count is zero, and task records still exist; dim `no workers` only when the reading is known, every count is zero, and no task record exists. |
 | `👁 supervision` | `watching` while `state/.last-watcher-beat` is under 180 seconds old. | Bright-red `not watching` when the beacon is missing, unreadable, or 180 seconds old or more; dim `idle` instead while the home holds no task or second-mate record and no registered check. |
 | `$ cost` | Cumulative cost in US dollars for the current orchestrator session, rounded to two decimals. | `$--` when the orchestrator does not expose cost. |
@@ -169,7 +169,7 @@ This supersedes the earlier record that Cursor had no third-party status surface
 `bin/fm-status-bar.sh --adapter cursor` consumes `model.display_name` (falling back to `model.id`),
 `model.param_summary` as effort, and `context_window.used_percentage` with the same
 `remaining_percentage` fallback the Claude adapter uses.
-The payload carries no provider quota and no session cost, so `⚡` and `$` stay `--` rather than being
+The payload carries no provider quota and no session cost, so `⚡️` and `$` stay `--` rather than being
 derived from anything else.
 
 Scope matters here: Cursor validates `statusLine` only in the user-level `cli-config.json`.
@@ -574,7 +574,7 @@ rm -rf "$tmp_root"
 Observed output:
 
 ```text
-⚓ Claude Fable·high │ 🧠35% ⚡12% │ 🚢0 ⏸0 ⚠0 │ 👁 0s │ $2.35 │ 💤--
+⚓ Claude Fable·high │ 🧠35% ⚡️12% │ 🚢0 ⏸0 ⚠0 │ 👁 0s │ $2.35 │ 💤--
 ```
 
 Pi's installed extension was loaded in a real 140-column Pi TUI with an isolated configuration and no model login:
@@ -597,7 +597,7 @@ rm -rf "$tmp_root"
 The TUI listed `fm-primary-status-bar.ts` under loaded extensions and rendered:
 
 ```text
-⚓ unknown·off │ 🧠-- ⚡-- │ 🚢0 ⏸0 ⚠0 │ 👁 4s │ $0.00 │ 💤--
+⚓ unknown·off │ 🧠-- ⚡️-- │ 🚢0 ⏸0 ⚠0 │ 👁 4s │ $0.00 │ 💤--
 ```
 
 A 48-column rerun stayed on one row and ended at `👁 NO-WA`, confirming that Pi truncates the ANSI line to the supplied render width instead of wrapping it.
@@ -626,7 +626,7 @@ The old rule was wrong in both directions at once: it reported thirteen running 
 The complete row, rendered by `bin/fm-status-bar.sh` from that live data with the Codex supply bound to the captain's actual primary pane:
 
 ```text
-⚓ gpt-6-astra·high │ 🧠82% ⚡9%wk │ 🚢2 🧪1 ⏸2 ⚠5 📋13 │ 👁 NO-WATCH 355s │ $-- │ 💤--
+⚓ gpt-6-astra·high │ 🧠82% ⚡️9%wk │ 🚢2 🧪1 ⏸2 ⚠5 📋13 │ 👁 NO-WATCH 355s │ $-- │ 💤--
 ```
 
 The `NO-WATCH` reading is an artifact of the copied beacon file, which does not advance; the live beacon was current throughout.
@@ -643,7 +643,7 @@ It must never mean matching on the command line: the captain's live companion ru
 The row below is 71 codepoints, and 76 with chrome mode's `FM` role marker, against Herdr's 80-codepoint border-title store:
 
 ```text
-⚓ gpt-6-astra·high │ 🧠82% ⚡9% │ 🚢0 🧪0 ⏸0 ⚠0 🪦0 📋0 │ 👁 0s │ $12.34 │ 💤--
+⚓ gpt-6-astra·high │ 🧠82% ⚡️9% │ 🚢0 🧪0 ⏸0 ⚠0 🪦0 📋0 │ 👁 0s │ $12.34 │ 💤--
 ```
 
 The new field costs three codepoints, and `chrome_clip` still drops whole fields with a visible marker on a row that outgrows the store, which `tests/fm-status-bar.test.sh` pins in both directions.
