@@ -9,6 +9,7 @@ Then you finish with the shared steps of [ONBOARDING.md](ONBOARDING.md), exactly
 
 **You need:** Windows 11 (22H2 or newer is best) or Windows 10 version 2004 or newer, 16 GB of RAM or more, and admin rights once.
 If your PC is work-managed, has less memory, or you cannot get admin rights, use [a small Linux server](ONBOARDING-linux-server.md) instead, or one of the [lighter options](#not-everyone-needs-the-full-setup) at the end.
+On a Windows on Arm PC (a laptop with an Arm processor rather than an Intel or AMD one) everything below works the same, except that the setup script skips Chrome, because Google ships none for Arm Linux, so your first mate's browser checks are unavailable; an x86 PC or [a Linux server](ONBOARDING-linux-server.md) has them.
 
 **Two tips for typing commands:** to paste into a terminal window, right-click inside it (or press `Ctrl+Shift+V`).
 When a command asks for a password, nothing appears while you type; that is normal, so type it and press Enter.
@@ -49,6 +50,7 @@ wsl --install -d Ubuntu-24.04
 Ubuntu then asks `Create a default Unix user account:` with your Windows name filled in.
 Press Enter to keep it, or replace it with a short lowercase name.
 Then it asks for a new password twice: pick one you will remember, because Linux asks for it when it installs software.
+A "Welcome to Windows Subsystem for Linux" window may also open beside it; close it, as nothing in it is needed.
 
 You are now inside Ubuntu, in your Windows folder (`/mnt/c/Users/<name>`).
 Type `exit` to get back to PowerShell, then check:
@@ -80,8 +82,11 @@ memory=8GB
 
 - `networkingMode=mirrored` lets review boards and the app's web preview open in your normal Windows browser through `localhost`.
   It needs Windows 11 22H2 or newer; on Windows 10, leave that line out, and `localhost` still works through WSL's default forwarding.
-- `memory=8GB` suits a 16 GB PC: a first mate, a few workers, a dev server and Chrome want about 8 GB.
-  With 32 GB or more you can leave it out.
+- `memory=8GB` is how much of your PC's memory Ubuntu may take; a first mate, a few workers, a dev server and Chrome want about 8 GB.
+  Without the line WSL takes up to half of the PC's memory, so on a 16 GB PC it changes nothing and you can leave it out.
+  Keep it on a PC with 32 GB or more only if you want Ubuntu held to 8 GB; a PC with less than 16 GB is below this guide's requirement, and taking 8 GB from it starves Windows.
+
+Microsoft's **WSL Settings** app (search for it in Start on a current Windows 11) edits the same settings with switches instead of this file; either way works.
 
 Apply it:
 
@@ -96,12 +101,17 @@ It prints nothing.
 ## 5. Use Windows Terminal
 
 Windows Terminal is built in on Windows 11 and in the Microsoft Store on Windows 10.
-Open it, click the small down arrow next to the tab, choose **Settings**, then on **Startup** set **Default profile** to **Ubuntu-24.04**, and click **Save** at the bottom right.
+First close the PowerShell window from the steps above: a Terminal window that was already open before Ubuntu was installed does not list Ubuntu yet.
+Then open Terminal from Start (not as admin), click the small down arrow next to the tab, choose **Settings**, then on **Startup** set **Default profile** to **Ubuntu-24.04**, and click **Save** at the bottom right.
 If you cannot see **Save**, make the window bigger.
 Close Terminal and open it again: every new tab now opens in Ubuntu.
 
-If the new Ubuntu tab starts with `Failed to configure network (networkingMode Mirrored), falling back to networkingMode None`, Ubuntu has no internet.
-Your Windows cannot use mirrored networking: delete the `networkingMode=mirrored` line from `.wslconfig` (step 4), run `wsl --shutdown` in PowerShell, and open a new Ubuntu tab.
+A new Ubuntu tab may start with a line about mirrored networking; what it says next decides what to do:
+
+- `Mirrored networking mode is not supported, falling back to NAT networking`: your Windows build cannot use mirrored mode, WSL went back to its default, and `localhost` still works.
+  Nothing needs changing; leave `.wslconfig` as it is.
+- `falling back to networkingMode None`: Ubuntu has no internet at all.
+  Delete the `networkingMode=mirrored` line from `.wslconfig` (step 4), run `wsl --shutdown` in PowerShell, and open a new Ubuntu tab.
 
 ---
 
@@ -146,8 +156,8 @@ gh auth login
 claude
 ```
 
-`gh auth login` asks four questions; the answers you want are already selected, so press Enter at each: **GitHub.com**, **HTTPS**, **Yes** to authenticate Git, then **Login with a web browser**.
-It shows a one-time code; press Enter, and your Windows browser opens on GitHub, where you paste the code and authorize.
+`gh auth login` asks four questions; the answers you want are already selected, so press Enter at each: **GitHub.com**, **Login with a web browser**, **HTTPS**, then **Yes** to authenticate Git.
+It shows a one-time code and copies it for you; press Enter, and your Windows browser opens on GitHub, where you paste the code and authorize.
 
 `claude` asks for a text style and a login method (**Claude account with subscription**), then opens your browser to sign in.
 Back in Ubuntu, press Enter through its notes.
@@ -164,7 +174,8 @@ In your Ubuntu tab, type:
 herdr
 ```
 
-The first time, Herdr may first ask how it should notify you; any answer works, and you can change it later in Herdr's settings (`Ctrl-b`, then `s`).
+The first time, Herdr shows a short welcome; press Enter, and it opens its settings on the agent integrations, where `claude` is already ticked.
+Press Esc to close them; you can open them again later with `Ctrl-b`, then `s`.
 Herdr then shows a shell, with a sidebar on the left where each worker will appear.
 
 ---
@@ -206,7 +217,7 @@ Hold Right Alt and speak to talk to your first mate: your words go straight into
 Tap Right Ctrl to dictate into whatever has your cursor; in the first mate's chat in Herdr, the dictated words wait there for you to press Enter.
 
 Talking and dictation need a working microphone.
-If the talk button shows an orange `!` and "Mic off - click !", Windows' privacy settings keep apps off the microphone: click it and turn on microphone access for desktop apps.
+If the talk button shows an orange `!` and "Mic off - click !", Windows' privacy settings keep apps off the microphone: click it, then turn on **Let apps access your microphone** and, below it, **Let desktop apps access your microphone**.
 Without a microphone, screenshots still reach your first mate.
 [docs/desk-floater-windows.md](docs/desk-floater-windows.md) has the rest.
 
@@ -225,7 +236,7 @@ Without a microphone, screenshots still reach your first mate.
 Starship is the full version.
 Two lighter ways to use Claude work on Windows with no Linux at all:
 
-- **The Claude desktop app:** download it from `claude.ai/download` with **Download for Windows**; it installs without admin rights.
+- **The Claude desktop app:** download it from `claude.com/download` with **Download for Windows**; it installs without admin rights.
 - **Claude Code in the browser** at `claude.ai/code`, which runs in the cloud.
 
 ## Troubleshooting
@@ -233,11 +244,14 @@ Two lighter ways to use Claude work on Windows with no Linux at all:
 | You see | Do this |
 |---|---|
 | No Ubuntu window and no user prompt after the restart | Run `wsl --install -d Ubuntu-24.04` again in Terminal (Admin) (step 3). |
-| `Failed to configure network (networkingMode Mirrored)`, or nothing downloads in Ubuntu | Delete the `networkingMode=mirrored` line from `.wslconfig`, run `wsl --shutdown`, and open a new Ubuntu tab (step 4). |
+| `Mirrored networking mode is not supported, falling back to NAT networking` | Nothing: WSL is using its default networking and `localhost` still works (step 5). |
+| `falling back to networkingMode None`, or nothing downloads in Ubuntu | Delete the `networkingMode=mirrored` line from `.wslconfig`, run `wsl --shutdown`, and open a new Ubuntu tab (step 4). |
 | `fm-linux-setup.sh: ... is on the Windows drive` | Run `cd ~` and start the setup again. |
 | `this is WSL 1` | In PowerShell: `wsl --set-version Ubuntu-24.04 2`, then run the setup again. |
 | No `Setup finished.` at the end of the setup | Run the setup command again. |
+| `not working: ... interop` for `wslview` or another tool that opens something in Windows | Windows interop is switched off in WSL. Open the file in Ubuntu with `sudo nano /etc/wsl.conf`. If it has an `[interop]` section with `enabled=false`, change it to `enabled=true` or delete that line. Save the file. In Windows PowerShell run `wsl --shutdown`, then reopen Ubuntu and run the setup again. For any other tool marked `not working`, the text after the colon is that tool's own error, so search or ask about that text. |
 | A board link or `localhost` page does not open in Windows | Check `.wslconfig` from step 4, run `wsl --shutdown`, open a new Ubuntu tab, and start again. |
+| `failed to authenticate via web browser: ... (request_failed)` from `gh auth login` | GitHub did not answer that once; run `gh auth login` again. |
 | `command not found: brew`, `claude`, `gh`, or `herdr` after setup | Open a new Ubuntu tab; the old one has the old PATH. |
 | A sign-in opens a Linux Chrome window instead of your normal browser | Open a new Ubuntu tab and sign in again; you can also just finish in that Chrome window. |
 | Everything is slow | Check `pwd`: your project must be under `/home/...`, never `/mnt/c/...`. |

@@ -142,6 +142,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/opt-in-skills/meeting-intake/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/opt-in-skills/tap-desk/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -171,6 +179,10 @@
     },
     {
       "path": ".agents/skills/diagnostic-reasoning/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/first-voyage/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -251,6 +263,10 @@
     },
     {
       "path": ".agents/skills/harness-adapters/references/harness/kimi.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/harness-adapters/references/harness/hermes.md",
       "audience": "agent-runtime"
     },
     {
@@ -434,7 +450,19 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bridge-strip.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/bridge-view.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/factory-pane.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/desk.md",
       "audience": "operator-current"
     },
     {
@@ -738,6 +766,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "docs/supervision-protocols/codex-checkpoint.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/supervision-protocols/cursor.md",
       "audience": "agent-runtime"
     },
@@ -827,6 +859,10 @@
     },
     {
       "path": "docs/verification/dispatch-resolve.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/hermes.md",
       "audience": "maintainer-verification"
     },
     {
@@ -942,7 +978,7 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/meeting-intake/SKILL.md",
+      "path": ".agents/skills/lavish-url/SKILL.md",
       "audience": "agent-runtime"
     },
     {

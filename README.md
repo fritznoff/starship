@@ -54,7 +54,8 @@ Launching a supported harness inside it for your primary session instantiates yo
 - **Optional Relay** - opt in with one local `.env` pairing token so firstmate can answer your public mentions on X and Discord alike, act on normal reversible mention requests through the same lifecycle as chat requests, acknowledge spawned work, and post up to three public-safe completion follow-ups within seven days for genuine milestones and the final outcome without changing non-Relay behavior; a final reply promised in a thread becomes durable state that is reconciled from disk, so a restart or a compacted conversation cannot lose it; dry-run preview records would-be replies and dismissals locally before go-live.
 - **Strict project boundary** - the first mate is read-only over your projects except for the narrow guarded and captain-approved operations authorized by [hard rule 1](AGENTS.md#1-identity-and-prime-directives), including fleet sync's guarded safe branch pruning; crewmates make every other project change behind the configured merge authority.
 - **Optional daily intake** - off until a home turns it on: a morning intake and a continuous channel intake read the sources the home names (such as Slack, mail, calendar and Asana), keep a ledger of what you still owe, send one grouped private alert for anything urgent, and rebuild a daily to-do page where every line says when it was last checked at its source ([setup](docs/configuration.md#daily-intake-and-to-do-page-configmorning-intake-configchannel-intake)).
-- **Restart-proof** - all state lives on disk and in the active session backend (tmux by hard default, herdr, rex, or cmux when selected or auto-detected, zellij/orca/paseo/t3code/tern/hc when explicitly selected); the next session reconciles after a restart, while ordinary supervision recovers confirmed-dead secondmate agents without waiting for one.
+- **Optional meeting intake** - off until a home turns it on: every call recorded with the call recorder, and every meeting recorded by Anarlog, becomes a one-line outcome, clear follow-ups the first mate starts on its own, and items held for your decision; nothing is sent to anyone without your word ([setup](docs/meetings.md)).
+- **Restart-proof** - all state lives on disk and in the active session backend (see [backend selection](docs/configuration.md#backend-selection-order)); the next session reconciles after a restart, while ordinary supervision recovers confirmed-dead secondmate agents without waiting for one.
 
 Full detail on every feature lives in [docs/architecture.md](docs/architecture.md).
 
@@ -71,45 +72,55 @@ Backend-specific setup is linked in [Documentation](#documentation).
 
 ### Recommended harnesses
 
-**Claude Code, Grok, and Pi are equal co-primary recommendations** for running the primary firstmate session, with `pi-signed` supported as Pi's distinct signed-wrapper identity.
-Claude Code uses a tracked Stop hook for tokenless watcher re-arm and rewake, Grok uses background-notify wake cycles, and Pi uses its tracked primary watcher extension.
-All three have verified turn-end guard paths when launched with their documented setup.
-Pick whichever one matches your subscription and workflow.
+**Claude Code with a Claude plan is the recommended harness** for the primary first mate session, and it is the one the onboarding guides install and sign in.
+It uses tracked Stop and StopFailure hooks for [tokenless watcher re-arm and rewake](docs/watcher-continuity.md#claude-stop-hook), including API-error turn ends, with a verified turn-end guard when launched through `bin/fm-primary.sh`.
 
-Oh My Pi (`omp`), a Pi fork, is verified as a primary with the same extension-owned watcher model as Pi and a stronger turn-end guard: its blocking `session_stop` hook compels a continuation instead of requesting one.
-Codex and OpenCode are also verified and supported as primary harnesses; Codex uses bounded foreground checkpoints, and OpenCode uses a TUI plugin, so both carry more harness-specific supervision tradeoffs than the three co-primaries.
-Cursor Agent CLI is verified as a primary too, using a tracked project-scope `.cursor/hooks.json` whose `stop` hook parks on the watcher between turns, closest in shape to Claude Code's.
-Launch it with `--trust`, or none of its project hooks load; it also has no turn-end hook in headless `cursor-agent -p`, so run the primary session interactively.
-Antigravity CLI (`agy`) is verified as a primary too, using a tracked project-local `.agents/hooks.json` whose Stop hook parks on the watcher between turns like Cursor's.
+**Codex and Pi are supported alternatives.**
+Both are verified primaries with the same supervision contract: Codex uses bounded foreground checkpoints unless a home opts in to its model-free native Stop park, and Pi uses its tracked primary watcher extension, with `pi-signed` supported as Pi's distinct signed-wrapper identity.
+Install and sign in to either, then launch the first mate with `bin/fm-primary.sh codex` or `bin/fm-primary.sh pi`, or keep Claude Code as the first mate and give workers to the other through `config/crew-harness` or your dispatch rules; [the handbook](docs/handbook.md#models-usage-and-second-mates) has the commands.
+
+Other verified primaries, each with its own notes:
+
+- Grok uses background-notify wake cycles; launch it with `--trust` once per clone so project hooks and the turn-end guard load (`/hooks-trust` inside Grok works too).
+- Oh My Pi (`omp`), a Pi fork, uses the same extension-owned watcher model as Pi and a stronger turn-end guard: its blocking `session_stop` hook compels a continuation instead of requesting one.
+- OpenCode uses a TUI plugin, so it carries more harness-specific supervision tradeoffs.
+- Cursor Agent CLI uses a tracked project-scope `.cursor/hooks.json` whose `stop` hook parks on the watcher between turns, closest in shape to Claude Code's.
+  Launch it with `--trust`, or none of its project hooks load; it also has no turn-end hook in headless `cursor-agent -p`, so run the primary session interactively.
+- Antigravity CLI (`agy`) uses a tracked project-local `.agents/hooks.json` whose Stop hook parks on the watcher between turns like Cursor's.
 
 ### Install and launch
 
+Follow the guide for your machine: [ONBOARDING.md](ONBOARDING.md) on a Mac, [ONBOARDING-windows.md](ONBOARDING-windows.md) on a Windows PC, or [ONBOARDING-linux-server.md](ONBOARDING-linux-server.md) on a rented server.
+In short, once Git, the GitHub CLI and Claude Code are installed and signed in:
+
 ```sh
 gh auth login
-git clone https://github.com/kunchenguid/firstmate
-cd firstmate
+git clone https://github.com/Amplify-Logic/starship ~/starship
+cd ~/starship
+bin/fm-primary.sh opus
 ```
 
-Then launch one of the co-primary harnesses; AGENTS.md takes over from there:
+`bin/fm-primary.sh` launches the first mate with the verified flags for its profile; AGENTS.md takes over from there.
+The alternatives launch the same way:
 
-**Claude Code**
+**Codex**
 
 ```sh
-claude
+bin/fm-primary.sh codex
+```
+
+**Pi**
+
+```sh
+bin/fm-primary.sh pi
+# or, when the signed wrapper is installed
+FM_PI_HARNESS=pi-signed pi-signed
 ```
 
 **Grok**
 
 ```sh
 grok --trust
-```
-
-**Pi**
-
-```sh
-pi
-# or, when the signed wrapper is installed
-FM_PI_HARNESS=pi-signed pi-signed
 ```
 
 **Oh My Pi**
@@ -122,13 +133,22 @@ FM_OMP_HARNESS=omp omp
 
 Start `omp` with this checkout as its working directory: it auto-discovers the tracked `.omp/extensions/*.ts` files with no trust dialog, and naming them with `-e` as well would load each twice.
 
-For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
 For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.
 The `/calm` toggle on Pi, and on Claude Code behind its default-off early-access function-hooks flag, hides supported transcript chrome, including canonically classified Firstmate operational user rows, and uses a Calm-only animated working boat during active runs while preserving all model context and session data.
 Calm changes only presentation, not the user-role delivery, ordering, authority, persistence, or exports of the operational inputs it hides.
 The preference persists for the effective Firstmate home, and toggling it off restores ordinary rendering.
 [Calm's current behavior and supported limits](docs/calm.md) are separate from its [version-scoped maintainer evidence](docs/calm-mode-feasibility.md).
 Pi's `/supervision-model` command pins a cheaper model and a shallower reasoning effort for the supervision branch alone, from the eligible models and thinking levels Pi itself reports, and with no pin the branch normally follows your own conversation's model and effort; see the [configuration schema](docs/configuration.md#pi-supervision-branch-model-and-effort-configsupervision-branch-model-configsupervision-branch-effort).
+
+### Recommended order on a new Mac
+
+A first install on a fresh 8 GB MacBook settled this order:
+
+1. Let the first mate install its own tools first, before any optional extra.
+2. Install Tailscale, if you use it, with Tailscale's own signed installer rather than Homebrew, since Homebrew cannot ask for the Mac password from an agent session.
+3. Restart Claude Code once after setup so its background helpers load.
+4. If two Starship homes should leave each other notes, give each a [restricted notes-only key](docs/porting.md#leaving-notes-between-two-homes) from the start.
+5. Set up the [desk floater](docs/desk-floater.md) last, signing up for its speech-to-text provider in Chrome first (a Safari sign-up failed).
 
 ### Talk to it
 
@@ -192,6 +212,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/quiet`           | Keep routine wakes off main while staying and chatting; requested actions proceed now rather than waiting for your return. Where Pi's branch or an [attended supervision host](docs/supervision-host.md#quiet-mode) already does this, it only says so; otherwise it starts the quiet daemon, which stays active through ordinary chat until `/quiet off` |
 | `/ahoy`            | Recap visible session events since the prior real captain message plus visibly unanswered captain decisions, then guide the captain through any open decisions one at a time in agent-judged impact order; fall back to Bearings when invoked as the session's first real captain message |
 | `/bearings`        | Generate a concise four-section chat digest from bounded fleet state, including registered remote-home ledgers and measured follow-up for owned contributions; use `/bearings file` to also replace today's dated report in `data/`, and add `include PRs` for live GitHub enrichment |
+| `/lavish-url <url> [--mobile]` | Capture an http or https page without URL credentials, public or local, into an annotatable Lavish review snapshot with `[Fix Layout]`, `[Update Text]`, and `[Mobile Bug]` chips and project-aware element labels; add `--mobile` for mobile emulation. Feedback returns as a notification and is filed to the backlog of the registered project that owns the site, or surfaced for a decision when the site's project is not certain |
 | `/updatefirstmate` | Guardedly update the running firstmate and its secondmates - fast-forward, or reconcile a redundant post-squash-merge divergence - then persist and restart every live mate successfully left on the target commit - including already-current homes - with an honest re-read nudge only when restart cannot be proven |
 | `/stow`            | Sweep the session for uncaptured durable knowledge, persist the open work records this session knows are unfiled or now wrong, curate tiered startup memory with decay and cold archival, enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
 

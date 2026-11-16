@@ -116,7 +116,7 @@ jobs:
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
 
-  # Two duration-balanced portable parallel shards of the Phase 2 proven-isolated
+  # Three duration-balanced portable parallel shards of the Phase 2 proven-isolated
   # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).
   tests-portable-parallel-1:
     name: ${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && 'Not run for label - ' || '' }}Behavior portable parallel 1
@@ -153,6 +153,7 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-1 \
+            --max-wall-ms 1800000 \
             --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Upload shard 1 timing artifact
@@ -193,6 +194,7 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-2 \
+            --max-wall-ms 1800000 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
       - name: Upload shard 2 timing artifact
         if: always()
@@ -200,6 +202,46 @@ jobs:
         with:
           name: fm-test-timing-portable-parallel-2
           path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-2.json
+          if-no-files-found: warn
+
+  tests-portable-parallel-3:
+    name: ${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && 'Not run for label - ' || '' }}Behavior portable parallel 3
+    runs-on: ubuntu-24.04
+    if: ${{ !(github.event_name == 'push' && vars.FM_CI_SKIP_PUSH == '1') && !(github.event.action == 'labeled' && github.event.label.name != 'full-ci') && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository || github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'COLLABORATOR' || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+    # Normal tier (see the timeout policy above).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install tasks-axi
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      - name: Run portable parallel shard 3
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          bin/fm-test-run.sh --lane portable-parallel-3 \
+            --max-wall-ms 1800000 \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-3.json"
+      - name: Upload shard 3 timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-portable-parallel-3
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-3.json
           if-no-files-found: warn
 
   # Required portable serial remainder: watcher, lock, AFK, tmux, daemon,
@@ -218,7 +260,7 @@ jobs:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -265,6 +307,7 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" \
+            --max-wall-ms 1800000 \
             --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
       - name: Upload portable serial shard ${{ matrix.shard }} timing artifact
@@ -376,6 +419,7 @@ jobs:
           # Serial only. Fail if any script reports herdr not found. Live
           # harness credential tests stay outside this family (opt-in env only).
           bin/fm-test-run.sh --family real-herdr-gated \
+            --max-wall-ms 1200000 \
             --fail-on-gate-skip 'herdr not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
       - name: Cleanup job-owned Herdr lab sessions
@@ -442,8 +486,8 @@ jobs:
           herdr-core --version
           treehouse --version
           version=$(herdr-core --version | awk '{print $2; exit}')
-          [ "$version" = "0.1.14" ] || {
-            echo "::error::expected exact herdr-core pin 0.1.14, got ${version:-<empty>}"
+          [ "$version" = "0.1.21" ] || {
+            echo "::error::expected exact herdr-core pin 0.1.21, got ${version:-<empty>}"
             exit 1
           }
       - name: Snapshot pre-suite hc lab sessions
@@ -465,6 +509,7 @@ jobs:
           # Serial only. Fail if any script reports hc not found. Live
           # harness credential tests stay outside this family (opt-in env only).
           bin/fm-test-run.sh --family hc \
+            --max-wall-ms 1200000 \
             --fail-on-gate-skip 'hc not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-hc.json"
       - name: Cleanup job-owned hc lab sessions
@@ -489,6 +534,10 @@ jobs:
           if-no-files-found: warn
 
   # Aggregate per-lane timing into one summary artifact for critical-path review.
+  # Each lane records its own tripwire as --max-wall-ms, so this step prints how
+  # long every lane took against its limit, in its log and on the run summary
+  # page, and warns on any lane within 15 percent of it
+  # (tests/fm-ci-workflow.test.sh keeps the two values equal).
   tests-timing-aggregate:
     name: ${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && 'Not run for label - ' || '' }}Behavior timing aggregate
     runs-on: ubuntu-24.04
@@ -497,6 +546,7 @@ jobs:
     needs:
       - tests-portable-parallel-1
       - tests-portable-parallel-2
+      - tests-portable-parallel-3
       - tests-portable-serial
       - tests-herdr
       - tests-hc
@@ -677,6 +727,7 @@ jobs:
       - test-coverage
       - tests-portable-parallel-1
       - tests-portable-parallel-2
+      - tests-portable-parallel-3
       - tests-portable-serial
       - tests-herdr
       - tests-hc

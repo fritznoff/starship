@@ -40,7 +40,7 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 | `open` | Read-only check of whether a row is still an open captain call. | [Cleanup never closes a captain call](#cleanup-never-closes-a-captain-call) |
 | `answers` | Channel-agnostic entry point for keyed answers. | [Answer-time resolution](#answer-time-resolution) |
 | `bind`, `unbind`, `binding` | Record that a captured-answer source feeds the keyed-answer intake. | [Source bindings](#source-bindings) |
-| `reconcile-requests` | Internal intake that records a reconcile request from a board selection. | [Reconcile](#reconcile-re-check-reality-never-a-blind-close) |
+| `reconcile-requests` | Internal intake that records a reconcile request from a board selection or the Factory pane's `Already settled?` key. | [Reconcile](#reconcile-re-check-reality-never-a-blind-close) |
 | `reconcile close`, `reconcile note`, `reconcile list` | Retire or list pending reconcile requests. | [Verifying and retiring a request](#verifying-and-retiring-a-request) |
 | `diverged` | Read-only report of a call whose two records disagree. | [Record divergence](#record-divergence) |
 
@@ -120,7 +120,7 @@ An expired deferral therefore remains answerable.
 
 ### Recording a reviewed inventory (`complete`)
 
-While originating task metadata is live, the `complete` subcommand unions the reviewed captain-held task ids, called the reviewed inventory, into `decision_keys=` and records `decisions_reviewed=1`, replacing any earlier pair and writing it once ahead of any armed `pr=` merge-poll identity lines so those stay last.
+While originating task metadata is live, the `complete` subcommand unions the reviewed captain-held task ids, called the reviewed inventory, into `decision_keys=` and records `decisions_reviewed=1`, replacing any earlier pair and writing it once ahead of any armed `pr=` merge-poll identity lines, because the metadata identity parse refuses these keys after `pr=`.
 A post-teardown visual review can complete against the surviving report and durable tasks without recreating volatile task metadata.
 The [lifecycle policy](../.agents/skills/captain-hold-lifecycle/SKILL.md#policy) assigns caller authority, including the scout's brief-scoped exception for an empty inventory.
 `tests/fm-brief.test.sh` pins that the scout brief's outside-worktree rule names exactly that `complete --none` command, so the write boundary and the completion step cannot drift apart again.
@@ -173,6 +173,7 @@ After cleanup, and still under the task's own lock, teardown does three things:
 
 - It records one `Deliverable of the finished work: ...` line at the end of the task body.
 - It copies a supported pull request or canonical `data/<id>/report.md` into the row's structured artifact fields.
+  A forced retention of a scout whose report was never written records no report, so the held row cannot read as a delivery.
   A Gerrit change or GitLab merge request URL is not a pull request tasks-axi accepts, so it appears only in the deliverable line.
 - It runs `tasks-axi reopen`.
 
@@ -181,7 +182,7 @@ It remains on the appropriate Captain's Call or Charted Next decision surface in
 
 ### Interrupted cleanup
 
-Teardown already stages a pending-close record before destructive cleanup.
+[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns when teardown publishes its pending-close record.
 That record carries the retention intent as a `mode=retain` line.
 An interrupted cleanup therefore replays the retention at the next session start through the same record, validator, and lock as an ordinary close, and never closes the row.
 
@@ -310,13 +311,13 @@ This captured-source intake records a durable reconcile request under `state/rec
 There is one private record per task, carrying the requesting provenance and a UTC timestamp.
 The record exists so the obligation to re-check cannot be lost between the wake that carried the answer and the turn that acts on it.
 It is idempotent per task: repeating a reconcile keeps one request and its original timestamp.
-The supported creator is the runner carrying the captain's board selection.
+The supported creators are the runner carrying the captain's board selection and the Factory pane's `Already settled?` key, which files under its own bound `factory-pane` source and wakes firstmate with an inbox note naming the call ([`factory-pane.md`](factory-pane.md#keys)).
 The binding-checked `reconcile-requests` command is that internal intake rather than an operator reconciliation outcome.
 
 ### Verifying and retiring a request
 
 Verification retires a request through one of two outcomes.
-Each outcome requires both the pending board-created request and the operator input that supports its claim:
+Each outcome requires both the pending request and the operator input that supports its claim:
 
 - `reconcile close <task-id> --evidence-file <path>` is the moot outcome.
   It writes a resolution record whose mode is `reconciled` and whose body is the supplied EVIDENCE under a `Reconciliation evidence:` label, then closes the task.
@@ -409,6 +410,9 @@ It preserves every captain hold in the bounded queued inventory of the owning ho
 `--all-decisions` reveals every captain hold available within the remote-summary bound and drops its gate.
 An available hold is therefore never in both Captain's Call and Charted Next.
 An actively worked held task may also appear in Underway, which reports running work independently of those decision buckets.
+
+Decision presentation uses the full-text field documented in [`bin/fm-bearings-snapshot.sh`](../bin/fm-bearings-snapshot.sh), preserving the recorded question and options while compact summaries remain overview-only.
+Older secondmate summaries without that field fall back to the title and reason text they retained.
 
 ### Accepted limits
 
@@ -656,12 +660,13 @@ That suite drives its Lavish session through a protocol-shaped stub.
 It separates a resolution from the durable-transfer close and from a still-open key.
 It reports the last real transition across re-openings and both key positions, and treats a prose mention as no transition.
 
-Projection regressions live in two suites:
+Projection and decision-text rendering regressions live in three suites:
 
 | Suite | What it covers |
 | --- | --- |
 | `tests/fm-fleet-snapshot-view.test.sh` | The total structured-only bucket classifier, hold-until parsing, kind-independent captain actionability, undated-hold aging, and title stripping. |
-| `tests/fm-bearings-snapshot.test.sh` | Default and expanded decision-bucket membership, deferral explanations, blocker-overflow disclosure, working-hold dual surfaces, remote-summary schema invalidation, exact leading-kind inference, artifact-kind mismatch and answered-question exclusion, kind-bearing and kindless local-only landings publishing their recorded note, and scout-report precedence over competing pull-request links. |
+| `tests/fm-bearings-snapshot.test.sh` | Default and expanded decision-bucket membership, deferral explanations, blocker-overflow disclosure, working-hold dual surfaces, remote-summary schema invalidation, exact leading-kind inference, artifact-kind mismatch and answered-question exclusion, kind-bearing and kindless local-only landings publishing their recorded note, scout-report precedence over competing pull-request links, and full local and secondmate question transport with Unicode, report pointers, and legacy optional-field fallbacks. |
+| `tests/fm-bearings-board-render.test.sh` | Complete snapshot question and option text reaching the rendered decision card, including Unicode. |
 
 ### Refreshing this record
 
@@ -669,7 +674,7 @@ The exact commands and their summarized outputs are recorded in the shipping PR'
 To refresh this record, run:
 
 - The four suites above: `tests/fm-captain-hold-lifecycle.test.sh`, `tests/fm-classify-decision-key.test.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-bearings-snapshot.test.sh`.
-- `tests/fm-send-resolve-key.test.sh`, `tests/fm-bearings-board.test.sh`, and `tests/fm-procevent.test.sh`.
+- `tests/fm-send-resolve-key.test.sh`, `tests/fm-bearings-board.test.sh`, `tests/fm-bearings-board-render.test.sh`, and `tests/fm-procevent.test.sh`.
 - `bin/fm-lint.sh`.
 
 After a lavish-axi upgrade, run `FM_BEARINGS_LAVISH_LIVE=1 tests/fm-bearings-board-lavish-live-e2e.test.sh`.

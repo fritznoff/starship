@@ -12,6 +12,7 @@
 #   fm-call-companion.sh reset
 #   fm-call-companion.sh list
 #   fm-call-companion.sh delete [<stamp> | --all]
+#   fm-call-companion.sh engine
 #
 # CONSENT: `start` refuses without --everyone-agreed. Pass it only after every
 # person on the call has said yes to being recorded; the flag is recorded as a
@@ -20,8 +21,17 @@
 # stops a running recording when the call ends.
 #
 # start --mic records this Mac's microphone and, through a loopback device such
-# as BlackHole, the call audio (bin/fm-call-mic.sh, transcribed locally by
-# whisper.cpp). start --page <id> reads a Google Meet tab's captions instead
+# as BlackHole, the call audio (bin/fm-call-mic.sh, transcribed on this Mac by
+# whisper.cpp or, with transcription_engine = deepgram and a Deepgram key, by
+# Deepgram; start says which, and writes it into the transcript under the
+# agreement line). engine prints the engine set, the one a recording would use
+# now, what this Mac has for each, whether Deepgram accepts the key (one free,
+# read-only check: working, rejected, or could not check), and which one suits
+# it: Deepgram when the Mac has less than 16 GB of memory, is not Apple
+# silicon, or a past recording fell behind (state/calls/slow-transcription,
+# left by bin/fm-call-mic.sh);
+# CALL_COMPANION_MEMORY_BYTES and CALL_COMPANION_CPU_BRAND stand in for
+# sysctl's answers. start --page <id> reads a Google Meet tab's captions instead
 # (bin/fm-call-captions.sh; `fm-call-captions.sh --find-meet` lists ids). Both
 # run the live desk (bin/fm-call-digest.sh) and open data/calls/glance.html.
 # Each call gets a stamp when it starts (state/calls/call-stamp); its archive
@@ -41,7 +51,13 @@
 # writing the notes of a call deleted meanwhile discards them. delete --all
 # removes every call, the archive, and the decision, spoken-order and action
 # logs, including untagged lines written before calls had stamps. delete
-# <stamp> and delete --all refuse while recording.
+# <stamp> and delete --all refuse while recording. Every delete of an archived
+# call also removes that call's meeting intake record and the inbox notes the
+# intake created for it (`fm-meetings.sh forget call-<stamp>`); when that
+# fails, the call is still deleted and the delete says so and exits 1. Items
+# firstmate already filed from those notes, such as backlog items or held
+# decisions that quote the call, stay until the owner asks firstmate to remove
+# them.
 #
 # desk opens the desk page; with --display, or on start when the display_host
 # setting is set, it also shows display_url full screen on that ssh host's
@@ -79,6 +95,7 @@ SSH_BIN=${CALL_COMPANION_SSH_BIN:-ssh}
 SWITCH_AUDIO_BIN=${CALL_COMPANION_SWITCH_AUDIO_BIN:-$(fm_call_tool SwitchAudioSource /opt/homebrew/bin/SwitchAudioSource)}
 STOP_TIMEOUT_SECONDS=${CALL_COMPANION_STOP_TIMEOUT_SECONDS:-2}
 PYTHON_BIN=${CALL_COMPANION_PYTHON_BIN:-$(fm_call_tool python3 /usr/bin/python3)}
+WHISPER_BIN=${WHISPER_BIN:-$(fm_call_tool whisper-cli /opt/homebrew/bin/whisper-cli)}
 NOTES_SCRIPT="$FM_CALL_BIN/fm-call-final-notes.py"
 FINAL_NOTES=${CALL_COMPANION_FINAL_NOTES:-1}
 NOTES_MODEL=${CALL_COMPANION_NOTES_MODEL:-$(fm_call_setting notes_model opus)}
@@ -98,6 +115,7 @@ usage: fm-call-companion.sh start --mic --everyone-agreed
        fm-call-companion.sh reset
        fm-call-companion.sh list
        fm-call-companion.sh delete [<stamp> | --all]
+       fm-call-companion.sh engine
 EOF
 }
 
@@ -388,8 +406,108 @@ has_transcript_lines() {
   [ -s "$TRANSCRIPT" ] && grep -Eq '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$TRANSCRIPT"
 }
 
+# Which engine a microphone recording started now transcribes with, said to
+# the terminal and written into the transcript under the agreement line, so
+# the record itself says whether the audio stayed on this Mac.
+announce_engine() {
+  local setting=$1 engine
+  engine=$(fm_call_engine_in_use)
+  if [ "$engine" = deepgram ]; then
+    transcript_note 'transcribed by Deepgram: each half minute of audio is sent to Deepgram, then deleted here'
+    printf 'companion: transcribing with Deepgram\n'
+  else
+    transcript_note 'transcribed on this Mac by whisper.cpp'
+    if [ "$setting" = deepgram ]; then
+      printf 'companion: Deepgram is set but no key was found (DEEPGRAM_API_KEY in this home'"'"'s .env); transcribing on this Mac\n'
+    else
+      printf 'companion: transcribing on this Mac (whisper.cpp)\n'
+    fi
+  fi
+}
+
+# Whether Deepgram accepts the home's key, with one free, read-only request:
+# working, rejected, or unchecked when Deepgram could not be reached.
+check_deepgram_key() {
+  local status=0
+  FM_HOME="$FM_CALL_HOME" "$FM_CALL_BIN/fm-deepgram-stt.sh" --check-key >/dev/null 2>&1 || status=$?
+  case "$status" in
+    0) printf 'working\n' ;;
+    3) printf 'rejected\n' ;;
+    *) printf 'unchecked\n' ;;
+  esac
+}
+
+# The engine set, the one in use, what this Mac has for each, whether Deepgram
+# accepts the key, and which engine suits this Mac.
+engine_report() {
+  local setting in_use key='not found' key_line replace_key whisper=missing model=none candidate memory_bytes memory_gb cpu chip slow='' reason='' advice
+  setting=$(fm_call_engine_setting) || exit 2
+  in_use=$(fm_call_engine_in_use)
+  if fm_call_deepgram_key_present; then
+    key=$(check_deepgram_key)
+  fi
+  [ ! -x "$WHISPER_BIN" ] || whisper=installed
+  candidate=$(fm_call_setting whisper_model '')
+  if [ -n "$candidate" ]; then
+    [ ! -f "$candidate" ] || model=$(basename "$candidate")
+  else
+    for candidate in "$HOME/.cache/whisper/ggml-large-v3-turbo.bin" "$HOME/.cache/whisper/ggml-base.en.bin"; do
+      if [ -f "$candidate" ]; then model=$(basename "$candidate"); break; fi
+    done
+  fi
+  memory_bytes=${CALL_COMPANION_MEMORY_BYTES:-$(sysctl -n hw.memsize 2>/dev/null || printf 0)}
+  [[ "$memory_bytes" =~ ^[0-9]+$ ]] || memory_bytes=0
+  memory_gb=$((memory_bytes / 1024 / 1024 / 1024))
+  cpu=${CALL_COMPANION_CPU_BRAND:-$(sysctl -n machdep.cpu.brand_string 2>/dev/null || printf unknown)}
+  case "$cpu" in Apple*) chip='Apple silicon' ;; '') chip=unknown ;; *) chip=$cpu ;; esac
+  [ ! -s "$STATE_DIR/slow-transcription" ] || slow=$(sed -n '1p' "$STATE_DIR/slow-transcription")
+  printf 'engine set:     %s (transcription_engine in config/call-companion; default local)\n' "$setting"
+  if [ "$setting" = deepgram ] && [ "$in_use" = local ]; then
+    printf 'in use now:     local, because no Deepgram key was found\n'
+  elif [ "$in_use" = deepgram ] && [ "$key" = rejected ]; then
+    printf 'in use now:     deepgram, but Deepgram rejected the key, so every chunk falls back to this Mac (or is lost without a local model) until the key is replaced\n'
+  else
+    printf 'in use now:     %s\n' "$in_use"
+  fi
+  case "$key" in
+    working) key_line='found and working: Deepgram accepted it' ;;
+    rejected) key_line='found but rejected: Deepgram refused it or its account is out of credit; put a new key from the Deepgram console in DEEPGRAM_API_KEY' ;;
+    unchecked) key_line='found, but could not check it: Deepgram could not be reached; run engine again once online' ;;
+    *) key_line='not found (DEEPGRAM_API_KEY in this home'"'"'s .env or the environment)' ;;
+  esac
+  printf 'deepgram key:   %s\n' "$key_line"
+  printf 'local engine:   whisper-cli %s, model %s\n' "$whisper" "$model"
+  if [ "$memory_gb" -gt 0 ]; then printf 'this mac:       %s GB memory, %s\n' "$memory_gb" "$chip"; else printf 'this mac:       memory unknown, %s\n' "$chip"; fi
+  [ -z "$slow" ] || printf 'last recording: %s\n' "$slow"
+  if [ "$memory_gb" -gt 0 ] && [ "$memory_gb" -lt 16 ]; then reason="this Mac has $memory_gb GB of memory"; fi
+  if [ "$chip" != 'Apple silicon' ]; then reason="${reason:+$reason and }it is not Apple silicon"; fi
+  if [ -n "$slow" ]; then reason="${reason:+$reason, and }a recording fell behind on it"; fi
+  replace_key="put a new key from the Deepgram console in DEEPGRAM_API_KEY in this home's .env (docs/call-companion.md)"
+  if [ "$key" = rejected ] && [ "$in_use" = deepgram ]; then
+    advice="replace the Deepgram key: Deepgram rejected it; ${replace_key}${reason:+, then keep Deepgram: $reason}."
+  elif [ "$key" = rejected ] && [ -n "$reason" ]; then
+    advice="use Deepgram: $reason. Deepgram rejected the key in .env, so first $replace_key, then set transcription_engine = deepgram in config/call-companion."
+  elif [ -n "$reason" ]; then
+    if [ "$in_use" = deepgram ]; then
+      advice="keep Deepgram: $reason."
+    elif [ "$key" != 'not found' ]; then
+      advice="use Deepgram: $reason. Set transcription_engine = deepgram in config/call-companion; the key is already in place."
+    else
+      advice="use Deepgram: $reason. Put DEEPGRAM_API_KEY in this home's .env and set transcription_engine = deepgram in config/call-companion (docs/call-companion.md)."
+    fi
+  elif [ "$in_use" = deepgram ]; then
+    advice='Deepgram is set up and in use; this Mac could also transcribe on its own with transcription_engine = local.'
+  elif [ "$whisper" = missing ] || [ "$model" = none ]; then
+    advice='this Mac can transcribe on its own once whisper-cpp and a speech model are installed (docs/call-companion.md), or use Deepgram instead.'
+  else
+    advice='this Mac can transcribe on its own; local is fine, and Deepgram still works if you set it up (docs/call-companion.md).'
+  fi
+  printf 'recommendation: %s\n' "$advice"
+}
+
 start_companion() {
-  local source=$1 page=${2:-}
+  local source=$1 page=${2:-} setting=
+  [ "$source" = captions ] || setting=$(fm_call_engine_setting) || exit 2
   if any_running; then
     printf 'companion: already running; use fm-call-companion.sh status or stop first\n' >&2
     exit 1
@@ -398,12 +516,14 @@ start_companion() {
   ! call_in_place || reset_companion
   prepare_views
   mkdir -p "$STATE_DIR"
+  rm -f "$STATE_DIR/engine-note" "$STATE_DIR/far-side-note"
   new_call_stamp > "$CALL_STAMP"
   transcript_note "recording started ($source) after everyone on the call agreed to be recorded"
 
   if [ "$source" = captions ]; then
     start_component captions fm-call-captions.sh captions.log --page "$page"
   else
+    announce_engine "$setting"
     prepare_loopback_output
     start_component mic fm-call-mic.sh mic.log
   fi
@@ -612,6 +732,19 @@ forget_call_lines() {
   done
 }
 
+# The meeting intake keeps its own record and inbox notes of an archived call it
+# took in; withdrawn consent removes those too.
+forget_intake() {
+  local out
+  [ "$#" -gt 0 ] || return 0
+  if ! out=$("$FM_CALL_BIN/fm-meetings.sh" forget "$@" 2>&1); then
+    printf 'companion: the meeting intake still holds a copy of the deleted call: %s\n' "$out" >&2
+    printf 'companion: once that is fixed, run bin/fm-meetings.sh forget %s\n' "$*" >&2
+    return 1
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out"
+}
+
 delete_in_place() {
   local stamp
   stamp=$(fm_call_stamp) || stamp=
@@ -644,6 +777,7 @@ delete_archived() {
   [ "$notes_removed" = false ] || write_idle_glance
   delete_logs
   printf 'companion: deleted archived call %s (started %s; %s files) and the logs\n' "$stamp" "$(stamp_time "$stamp")" "$count"
+  forget_intake "call-$stamp" || exit 1
 }
 
 delete_latest() {
@@ -670,12 +804,17 @@ delete_stamp() {
 }
 
 delete_all() {
+  local stamp ids=()
   refuse_while_recording delete
+  while IFS= read -r stamp; do
+    ids+=("call-$stamp")
+  done < <(list_archive)
   clear_pid_files
   rm -rf "$DATA_DIR"
   rm -f "$LIVE_ITEMS" "$CALL_STAMP" "$STATE_DIR/triggers.log" "$STATE_DIR/decisions.log" "$STATE_DIR/decisions-batch.log" "$STATE_DIR/actions.log"
   delete_logs
   printf 'companion: deleted every call, the archive, and the decision, spoken-order and action logs\n'
+  forget_intake ${ids[@]+"${ids[@]}"} || exit 1
 }
 
 main() {
@@ -723,6 +862,10 @@ main() {
     list)
       [ "$#" -eq 1 ] || { usage; exit 2; }
       list_archive
+      ;;
+    engine)
+      [ "$#" -eq 1 ] || { usage; exit 2; }
+      engine_report
       ;;
     delete)
       case "$#:${2:-}" in

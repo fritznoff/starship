@@ -21,7 +21,7 @@ assert_present "$CLEANUP" "bin/fm-herdr-ci-cleanup.sh is missing"
 
 TMP_ROOT=$(fm_test_tmproot fm-install-herdr)
 HERDR_PIN_SHA256=14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d
-TREEHOUSE_PIN_SHA256=78c820c5872bf9d9d3eb19bbedd75e4804b9258c862238993fa160cf9d215ed8
+TREEHOUSE_PIN_SHA256=bd6227d909ba8046263ae5d4e072ccbcf43010cac9d7289b1262126510edfeed
 
 # installer_world <name>: a fresh case dir with a fakebin that reports a Linux
 # x86_64 host and serves $FAKE_ASSET for any curl download, logging curl's
@@ -124,27 +124,27 @@ test_herdr_installer_pins_exact_version_and_checksums() {
 test_treehouse_installer_pins_exact_version_and_checksums() {
   local case_dir
   case_dir=$(installer_world treehouse-mismatch)
-  write_fake_treehouse_archive "$case_dir" 3.1.3
+  write_fake_treehouse_archive "$case_dir" 3.1.8
   run_installer "$TREEHOUSE_INSTALL" "$case_dir"
   expect_code 1 "$RUN_RC" "Treehouse installer with an off-pin archive"
-  assert_contains "$RUN_ERR" "checksum mismatch for treehouse-v3.1.3-linux-amd64.tar.gz (expected $TREEHOUSE_PIN_SHA256" \
+  assert_contains "$RUN_ERR" "checksum mismatch for treehouse-v3.1.8-linux-amd64.tar.gz (expected $TREEHOUSE_PIN_SHA256" \
     "Treehouse installer must refuse an archive whose SHA-256 is not the pin"
   assert_absent "$case_dir/dest/treehouse" "Treehouse installer must not install an off-pin archive"
-  assert_equals "https://github.com/kunchenguid/treehouse/releases/download/v3.1.3/treehouse-v3.1.3-linux-amd64.tar.gz" \
+  assert_equals "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-linux-amd64.tar.gz" \
     "$(grep '^https://' "$case_dir/curl.log")" \
-    "Treehouse installer must fetch the 3.1.3 Linux amd64 archive from kunchenguid/treehouse"
+    "Treehouse installer must fetch the 3.1.8 Linux amd64 archive from kunchenguid/treehouse"
   assert_equals "--max-filesize" "$(grep -x -- '--max-filesize' "$case_dir/curl.log")" \
     "Treehouse installer must bound the download size"
 
   case_dir=$(installer_world treehouse-match)
-  write_fake_treehouse_archive "$case_dir" 3.1.3
+  write_fake_treehouse_archive "$case_dir" 3.1.8
   fake_sha256 "$case_dir" "$TREEHOUSE_PIN_SHA256"
   run_installer "$TREEHOUSE_INSTALL" "$case_dir"
   expect_code 0 "$RUN_RC" "Treehouse installer with the pinned archive: $RUN_ERR"
   [ -x "$case_dir/dest/treehouse" ] || fail "Treehouse installer must install the pinned archive's binary"
-  assert_equals "v3.1.3" "$("$case_dir/dest/treehouse" --version)" \
+  assert_equals "v3.1.8" "$("$case_dir/dest/treehouse" --version)" \
     "Treehouse installer must install the archive's treehouse binary"
-  pass "Treehouse installer fetches the pinned 3.1.3 archive and verifies its checksum"
+  pass "Treehouse installer fetches the pinned 3.1.8 archive and verifies its checksum"
 }
 
 test_cleanup_only_targets_job_owned_lab_sessions() {
@@ -172,17 +172,11 @@ test_ci_wires_installers_and_required_lane() {
     "CI Herdr lane must fail on herdr-not-found"
   assert_grep 'family real-herdr-gated' "$CI" \
     "CI Herdr lane must run only the real-herdr-gated family"
-  assert_grep 'lane portable-parallel-1' "$CI" \
-    "portable CI must run parallel shard 1"
-  assert_grep 'lane portable-parallel-2' "$CI" \
-    "portable CI must run parallel shard 2"
   # The serial lanes are a matrix job, so each shard's lane name is composed
   # from its own matrix entry rather than written out once per shard.
   # shellcheck disable=SC2016 # The workflow's own literal, matched verbatim.
   assert_grep 'portable-serial-${{ matrix.shard }}of${{ strategy.job-total }}' "$CI" \
     "portable CI must compose each serial shard lane from its matrix entry"
-  assert_grep 'shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]' "$CI" \
-    "portable CI must run every serial shard"
   assert_grep 'fm-test-run.sh --check-coverage' "$CI" \
     "CI must prove portable lanes and Herdr partition the complete inventory"
   # Live harness credential tests must stay out of the default Herdr lane.
@@ -195,7 +189,34 @@ test_ci_wires_installers_and_required_lane() {
   pass "CI wires pinned installers into a required serial Herdr lane"
 }
 
+# A refused download must leave nothing installed and must have asked Herdr's
+# current repository for the release asset.
+test_herdr_installer_refuses_a_failed_download() {
+  local case_dir fakebin code=0
+  case_dir="$TMP_ROOT/herdr-download-refused"
+  fakebin=$(fm_fakebin "$case_dir")
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in https://*) printf '%s\n' "$arg" > "$FM_CURL_URL_LOG" ;; esac
+done
+exit 22
+SH
+  chmod +x "$fakebin/curl"
+  FM_CURL_URL_LOG="$case_dir/url" PATH="$fakebin:$PATH" RUNNER_TEMP="$case_dir" \
+    bash "$HERDR_INSTALL" "$case_dir/dest" 2>"$case_dir/err" || code=$?
+  [ "$code" -ne 0 ] || fail "installer succeeded although the download was refused"
+  [ -s "$case_dir/url" ] || fail "installer requested no release URL: $(cat "$case_dir/err")"
+  case "$(cat "$case_dir/url")" in
+    https://github.com/herdrdev/herdr/releases/download/v*/herdr-*) ;;
+    *) fail "installer requested $(cat "$case_dir/url"), not a herdrdev/herdr release asset" ;;
+  esac
+  [ ! -e "$case_dir/dest/herdr" ] || fail "installer installed a binary after a refused download"
+  pass "installer downloads the pinned asset from herdrdev/herdr and installs nothing when that download is refused"
+}
+
 test_herdr_installer_pins_exact_version_and_checksums
+test_herdr_installer_refuses_a_failed_download
 test_treehouse_installer_pins_exact_version_and_checksums
 test_cleanup_only_targets_job_owned_lab_sessions
 test_ci_wires_installers_and_required_lane

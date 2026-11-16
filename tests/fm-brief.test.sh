@@ -666,10 +666,11 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing the per-call session option contract"
   assert_grep "direct \`herdr server stop\`" "$brief" \
     "Herdr lab brief missing the forbidden server-global command list"
-  assert_grep "records the live default session before provisioning" "$brief" \
-    "Herdr lab brief missing the before tripwire"
-  assert_grep "verifies the identical fleet state after teardown" "$brief" \
-    "Herdr lab brief missing the after tripwire"
+  # shellcheck disable=SC2016 # literal backticks are matched verbatim
+  assert_grep 'See the `bin/fm-herdr-lab.sh` header for the fleet-state tripwire and `FM_HERDR_LAB_FLEET_SESSION` rule.' "$brief" \
+    "Herdr lab brief missing the tripwire owner pointer"
+  assert_grep "A missing, stopped, or changed fleet session is a hard tripwire failure" "$brief" \
+    "Herdr lab brief missing the hard tripwire failure guidance"
   assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
     "Herdr lab brief retained the unguarded declaration"
   pass "fm-brief.sh: --herdr-lab emits the complete hard safety contract"
@@ -1128,6 +1129,28 @@ test_scout_completion_write_exception_is_task_scoped() {
   pass "fm-brief.sh: scouts may attest only their own empty inventory through the guarded command"
 }
 
+# A scout's report comes with a page presenting it; a ship brief asks for none.
+test_scout_brief_asks_for_a_page_beside_its_report() {
+  local home scout ship
+  home="$TMP_ROOT/report-page-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" sample-look sample --scout >/dev/null 2>&1 || fail "scout scaffold failed"
+  scout="$home/data/sample-look/brief.md"
+  assert_grep "Then write \`$home/data/sample-look/page.html\` beside it: one self-contained page that shows the same work in the format that best presents it" "$scout" \
+    "scout brief did not ask for a page beside its report"
+  assert_grep "tables for records, side-by-side comparisons for options, a timeline for a sequence of events" "$scout" \
+    "scout brief did not say which formats present the work"
+  assert_grep "\`report.md\` stays the source" "$scout" "scout brief did not keep report.md as the source"
+  assert_grep "write only the report, its page, and the status file below" "$scout" \
+    "scout outside-write rule did not allow the page"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" sample-fix sample --mode direct-PR >/dev/null 2>&1 || fail "ship scaffold failed"
+  ship="$home/data/sample-fix/brief.md"
+  assert_no_grep "page.html" "$ship" "a ship brief asked for a report page"
+  pass "fm-brief.sh: a scout writes a page presenting its report, and a ship brief is unchanged"
+}
+
 # A scout brief offers the Lavish review loop for every compatible board version,
 # including older builds that use the legacy reply path.
 test_scout_lavish_line_follows_presentation_floor() {
@@ -1333,6 +1356,38 @@ test_worker_role_scope() {
   assert_grep "The local \`AGENTS.md\` is your job description" "$brief" "secondmate lost its supervisor contract"
   assert_grep 'That file is your parent channel' "$brief" "secondmate lost its parent channel"
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
+}
+
+# Every ship and scout worker is told to push back on a weak approach: do the
+# work when it is a good idea, otherwise suggest something else through the
+# decision channel and wait, never building the alternative on its own. The
+# line appears once per brief, identical across kinds, and not in a charter.
+test_ship_and_scout_carry_push_back_line() {
+  local kind home brief line first=''
+  home="$TMP_ROOT/push-back"
+  for kind in no-mistakes direct-PR local-only scout; do
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$kind" arbitrary-project-name --scout >/dev/null || fail "scout scaffold failed"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$kind" arbitrary-project-name --mode "$kind" >/dev/null || fail "$kind scaffold failed"
+    fi
+    brief="$home/data/$kind/brief.md"
+    [ "$(grep -c 'If you think this is a good idea, do it. Otherwise, suggest something else' "$brief")" = 1 ] \
+      || fail "$kind brief must carry the push-back line exactly once"
+    line=$(grep 'If you think this is a good idea' "$brief")
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_contains "$line" '`needs-decision [at=<epoch>]: {what you would do instead and why}` and wait' \
+      "$kind push-back line must route a better idea through needs-decision"
+    assert_contains "$line" 'never build your alternative unless firstmate agrees' \
+      "$kind push-back line must not let the worker change scope on its own"
+    [ -z "$first" ] || [ "$line" = "$first" ] || fail "$kind push-back line drifted from the first scaffold"
+    first=$line
+  done
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
+    "$ROOT/bin/fm-brief.sh" supervisor --secondmate --no-projects >/dev/null || fail "secondmate scaffold failed"
+  assert_no_grep 'If you think this is a good idea' "$home/data/supervisor/brief.md" \
+    "secondmate charter must not receive the worker push-back line"
+  pass "fm-brief.sh: ship and scout briefs tell the worker to do a good approach or suggest something else first"
 }
 
 # Both PR-ending modes must tell the worker to aim the PR at the repository the
@@ -1651,6 +1706,7 @@ test_branch_prefix_command_is_shell_safe() {
 }
 
 test_worker_role_scope
+test_ship_and_scout_carry_push_back_line
 
 # Rule 2 governs file edits rather than pool administration, so every crewmate
 # scaffold must prohibit the administrative act itself. The rule is emitted from
@@ -1753,6 +1809,7 @@ test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_completion_write_exception_is_task_scoped
 test_scout_and_secondmate_scaffold
+test_scout_brief_asks_for_a_page_beside_its_report
 test_scout_lavish_line_follows_presentation_floor
 test_inbox_listing_command_is_safe_on_empty_inbox
 test_workers_wait_without_spending_turns

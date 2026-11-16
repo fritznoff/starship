@@ -18,7 +18,8 @@
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--outward '<permission>'] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
-#   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
+#   data/<task-id>/report.md, presented by a page beside it at
+#   data/<task-id>/page.html (no branch, no push, no PR), and the worktree is scratch.
 #   It offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
 #   confirms the legacy board-compatibility floor; otherwise it asks for a text report.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -646,7 +647,7 @@ HERDR_SECTION=$(printf '%s\n' \
 '' \
 'For tmux-based lab primaries, `bin/fm-lab-home.sh` owns the short private socket directory; do not place `TMUX_TMPDIR` under the lab home or worktree.' \
 'Use `LAB_HOME_HELPER='"$(shell_quote "$FM_ROOT/bin/fm-lab-home.sh")"'`, then `LAB_TMUX_DIR=$("$LAB_HOME_HELPER" tmux-dir "$FM_HOME")` and launch tmux with `TMUX_TMPDIR="$LAB_TMUX_DIR"`.' \
-'Your single EXIT cleanup trap must kill only the server addressed through that `TMUX_TMPDIR`, call `"$LAB_HOME_HELPER" teardown "$FM_HOME"`, and call the Herdr teardown below; do not install a second trap that replaces either cleanup.' \
+'Your single EXIT cleanup trap must kill only that server, by its explicit socket (`tmux -S "$LAB_TMUX_DIR/tmux-$(id -u)/<socket-name>" kill-server`) and only while that socket exists, never through `TMUX_TMPDIR` alone, which silently falls back to the default tmux server once the directory is gone; it must also call `"$LAB_HOME_HELPER" teardown "$FM_HOME"` and the Herdr teardown below; do not install a second trap that replaces either cleanup.' \
 '' \
 '1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and generate the session name with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
 '   Install the combined EXIT cleanup before provisioning, then provision only with `"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"`.' \
@@ -656,11 +657,10 @@ HERDR_SECTION=$(printf '%s\n' \
 '   It re-checks refuse-default immediately before stop and again immediately before delete, and fails closed on ambiguity.' \
 '4. If an experiment requires a deliberate mid-run session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`; it performs the same immediate refuse-default check.' \
 '5. Forbidden commands: direct `herdr server stop`, every other server-global operation such as `herdr server live-handoff` or reload/update operations, direct `herdr session stop`, direct `herdr session delete`, and any Herdr call scoped only by ambient or inline `HERDR_SESSION`.' \
-'6. The helper records the live default session before provisioning and verifies the identical fleet state after teardown.' \
-'   A missing, stopped, or changed default session is a hard tripwire failure, never a cleanup warning to ignore.' \
+'6. See the `bin/fm-herdr-lab.sh` header for the fleet-state tripwire and `FM_HERDR_LAB_FLEET_SESSION` rule.' \
+'   A missing, stopped, or changed fleet session is a hard tripwire failure, never a cleanup warning to ignore.' \
 '' \
-'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.' \
-'The captain fleet uses the running `default` session.')
+'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.')
 else
 IFS= read -r -d '' HERDR_SECTION <<'EOF' || true
 # Herdr lifecycle declaration - NOT ENABLED
@@ -725,6 +725,12 @@ Reading, searching, listing and creating drafts in connected accounts such as ma
 Sending, replying, forwarding, answering or changing calendar events, sharing, trashing, Zapier actions, and opening a URL, clicking, typing or running scripts through the Claude in Chrome tools need the captain's word, and a check refuses them unless this job or this home allows them.
 When the check refuses something the job needs, do not retry it or reach the same result another way; append \`blocked:\` naming the refused action and stop."
 
+# One shared string keeps the ship and scout push-back line identical. A worker
+# that sees a better approach suggests it through the decision channel; it never
+# builds the alternative on its own, so scope stays with firstmate.
+# shellcheck disable=SC2016 # Literal backticks are brief text, not expansions.
+PUSH_BACK_LINE='If you think this is a good idea, do it. Otherwise, suggest something else: append `needs-decision [at=<epoch>]: {what you would do instead and why}` and wait; never build your alternative unless firstmate agrees.'
+
 # One shared string keeps the ship and scout shell-path rule identical.
 IFS= read -r -d '' SHARED_NO_CD_RULE <<'EOF' || true
 8. Never start a shell command with `cd`, and never run a search whose path depends on the current directory.
@@ -748,6 +754,7 @@ else
 fi
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+$PUSH_BACK_LINE
 
 $TASK_SECTION
 
@@ -761,7 +768,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; outside it, write only the report and status file below, except for the task's empty-inventory attestation through \`fm-captain-hold.sh complete --none\`, exactly as specified under Definition of done.
+2. Stay inside this worktree; outside it, write only the report, its page, and the status file below, except for the task's empty-inventory attestation through \`fm-captain-hold.sh complete --none\`, exactly as specified under Definition of done.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`
@@ -789,6 +796,8 @@ $WAIT_BLOCK$INBOX_SECTION
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+Then write \`$DATA/$ID/page.html\` beside it: one self-contained page that shows the same work in the format that best presents it - tables for records, side-by-side comparisons for options, a timeline for a sequence of events - readable in light and dark and at any width.
+\`report.md\` stays the source: the page presents what the report says and adds nothing it lacks, and the captain opens the page to read the work before deciding.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 Only when the reviewed inventory is empty, run \`FM_HOME=$(shell_quote "$FM_HOME") bash $(shell_quote "$FM_ROOT/bin/fm-captain-hold.sh") complete $(shell_quote "$ID") --none\`.
@@ -826,6 +835,7 @@ DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CO
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+$PUSH_BACK_LINE
 
 $TASK_SECTION
 

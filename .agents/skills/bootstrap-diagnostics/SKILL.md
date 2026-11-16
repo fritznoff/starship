@@ -1,7 +1,7 @@
 ---
 name: bootstrap-diagnostics
 description: >-
-  Load when the session-start digest's bootstrap or network-checks section, or a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run, prints an actionable diagnostic line - MISSING, MISSING_MANUAL, OUTDATED, PRESENTATION_UNAVAILABLE, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, CONFIG_REREAD, ACCOUNTS invalid, PR_CHECK_MIGRATION, TOOLCHAIN_DRIFT, HOST_ENV, UPSTREAM, UPSTREAM_REPORT, UPSTREAM_CATCHUP, STACK_TOOLS, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy.
+  Load when the session-start digest's bootstrap or network-checks section, or a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run, prints an actionable diagnostic line - MISSING, MISSING_MANUAL, OUTDATED, PRESENTATION_UNAVAILABLE, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, CONFIG_REREAD, ACCOUNTS invalid, PR_CHECK_MIGRATION, TOOLCHAIN_DRIFT, HOST_ENV, UPSTREAM, UPSTREAM_REPORT, UPSTREAM_CATCHUP, STACK_TOOLS, LEAK_PREPUSH, MOTHERSHIP_MONITOR, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy.
   A silent bootstrap section, or any other BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -101,6 +101,7 @@ When any diagnostic needs captain attention, report the plain consequence and re
   A path on the Windows drive is the captain's to move into the Linux home; never move a home or clone yourself, because that strands live workers and unlanded work.
   Localhost forwarding off means review boards and dev servers will not open in the Windows browser until the captain edits the named `.wslconfig` and restarts WSL, which also ends this session.
   Networking mode none means this Ubuntu has no network at all, so every network check and install fails, until the captain removes the mirrored line from `.wslconfig` and restarts WSL, which also ends this session.
+- `HOST_ENV: Linux on aarch64: no Chrome is installed ...` - this Arm machine, an Arm server or WSL on a Windows on Arm PC, has no browser for `chrome-devtools-axi`, so do not dispatch or attempt browser checks here and say so when a task needs one; nothing else is blocked, and only an x86 machine or an installed Chromium changes it.
 - `UPSTREAM: <N> commits behind <remote>/<branch> (<url>) - <subjects>` - this home is a fork whose configured upstream has commits the local checkout lacks.
   `<N>` is what is genuinely still outstanding: the raw upstream delta minus the commits this fork has already delivered.
   When the line carries an `<R> upstream commits, <D> already delivered here` clause, the ledger accounted for `<D>` of them, and the listed subjects are only the outstanding ones.
@@ -122,5 +123,11 @@ When any diagnostic needs captain attention, report the plain consequence and re
   A quiet-window upgrade (Herdr or treehouse) is booked with the captain as a held item for a window with no workers running, following the `catchup` skill's Tool versions rules, which own the quiet-window and Herdr-pin details; `bin/fm-stack-versions.sh report` shows the full comparison against Starship's own pins.
   When a held item already books that upgrade, or the captain already declined these exact versions, do not ask again; mention it only if the versions changed.
   A `could not check: <tool>, ...` clause, or a line carrying only that clause, means the installed version or the target version could not be read (often offline); it is unknown, never a claim the tool is current, appears at most once a day, and needs no action beyond a mention.
+- `LEAK_PREPUSH: <checkout>: <problem>` - bootstrap could not install the pre-push leak check on this home's checkout or its add-on, so a push typed by hand there is not checked; the line names the problem, and `bin/fm-leak-prepush.sh`'s header owns the hook.
+  When the problem is two other pre-push hooks, ask the captain which one to keep rather than removing either.
+  When the problem is a `core.hooksPath` outside the repository's git directory (a user-global one, or a tracked hook manager's directory), tell the captain that hand pushes from that checkout go unchecked and ask how they want it handled; that setting is the owner's, so never unset, change or write into it yourself.
+  Otherwise fix what the line names and rerun bootstrap.
+- `MOTHERSHIP_MONITOR: <room|config line>: <problem>` - a room `config/mothership-monitor` switches on is not listening, or a line in that file is not `<room> = on|off` and counts as off; the line names the problem, and `bin/fm-procevent-mothership.sh`'s header owns the setting.
+  Tell the captain in plain words which room is not being watched and why, such as a room this Starship has not joined or a Mothership link that needs updating, and switch it on again with `bin/fm-procevent-mothership.sh on <room>` once that is fixed.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.

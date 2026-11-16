@@ -53,6 +53,7 @@ The rest of the clone (instructions, scripts, skills, and these docs) is shared 
 
 Three plain-text files carry what the first mate should always know.
 It reads all three at the start of every session, whichever AI tool you run it on.
+Your first conversation starts the first of them: what to call you, what you want off your plate, and your house rules go in as you answer ([first-voyage](../.agents/skills/first-voyage/SKILL.md) owns that conversation).
 
 | File | Holds | Example entries |
 | --- | --- | --- |
@@ -68,6 +69,9 @@ remember this as a standing preference: always show me a draft before anything i
 record this as a learning: project X's tests only pass with Docker running
 from now on, for project X, you may merge green pull requests yourself
 ```
+
+How it talks to you lives in `data/captain.md` too: what to call you, the tone, emojis or not, and how short.
+It asks once in your first session, uses your answer in every reply, and changes it whenever you say so, for example "call me Partner, be playful, and keep it short" ([address and tone](configuration.md#address-and-tone)).
 
 Good entries are short, specific, and say why when the reason is not obvious.
 A rule with a reason is followed more sensibly at the edges than a bare command.
@@ -92,7 +96,7 @@ Claude Code, for example, has a per-folder memory it can write notes into and lo
 Use the home's records (`data/captain.md`, `data/learnings.md`, and the backlog) for anything the first mate must act on.
 They load on every supported AI tool, travel with your home if you move it to another machine, and are curated by `/stow`.
 
-The AI tool's own memory is fine for small notes about how you like to be spoken to, but it is tied to that one tool and that one folder.
+The AI tool's own memory is fine for small personal notes, but it is tied to that one tool and that one folder; how you like to be spoken to belongs in `data/captain.md`, where it outranks the default style.
 If both disagree, the home's records win.
 
 Two more records hold work rather than preferences:
@@ -162,8 +166,16 @@ Ask for one when a comparison, plan, or report would be easier to read than chat
 ## Models, usage, and second mates
 
 The first mate can start workers on several AI tools (Claude Code, Cursor, Codex, Pi, and others) once each is installed and signed in.
-If you only have Claude Code, everything simply runs there.
+If you only have Claude Code, everything simply runs there, and that is the recommended setup.
 With more than one, your dispatch rules say which kinds of job may go where, and when a rule offers a choice the first mate checks how much usage each subscription has left with `quota-axi` before picking.
+
+Codex and Pi are the supported alternatives, and adding one takes three steps:
+
+1. Install and sign in, in a terminal: Codex with `npm install -g @openai/codex` and then `codex login`; Pi with `npm install -g @earendil-works/pi-coding-agent`, then start `pi` and type `/login`.
+   Each needs its own subscription or API key.
+2. To run every worker on it, write its name into one file: `echo codex > ~/starship/config/crew-harness` (or `pi`); the next worker starts on it, and `default` or no file keeps workers on the first mate's own tool ([configuration](configuration.md#choose-the-worker-harness)).
+   To mix tools by kind of job instead, copy [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) to `~/starship/config/crew-dispatch.json` and edit its rules; it already shows Codex and Pi profiles.
+3. To run the first mate itself on it, start it with `bin/fm-primary.sh codex` or `bin/fm-primary.sh pi` instead of `opus`.
 
 A **second mate** is an optional, persistent helper first mate with its own home, for one area of work that has grown big enough to deserve one (for example "all website work").
 You still talk only to your first mate; it routes matching work to the second mate.
@@ -220,9 +232,10 @@ Three commands switch the style for every worker in your home:
 [docs/configuration.md](configuration.md#worker-outward-actions-configoutward-permissions) owns the permissions and styles.
 
 The check covers only workers: the first mate itself and second mates are not checked, so a connector they use can send, post, or change something without asking you first.
-Record a standing rule before you connect mail or chat ([ONBOARDING step 4](../ONBOARDING.md#4-let-it-finish-its-own-setup-and-set-one-standing-rule) prompts for it).
-Record it in both places: `data/captain.md` binds the first mate, and the same line in `config/brief-include.md` puts it in every worker brief, which also covers what the check does not, such as tools outside your connectors.
-That onboarding step has the exact words to send.
+Your first conversation offered a standing rule for that, that the first mate never sends, posts or replies to anyone outside on your behalf without showing you the draft first, and recorded the version you kept, changed, or dropped ([ONBOARDING step 4](../ONBOARDING.md#4-say-hello-your-first-mate-takes-it-from-here)).
+When kept, it lives in `data/captain.md` for the first mate and in `config/brief-include.md` for every worker, which also covers what the check does not, such as tools outside your connectors.
+If you dropped or loosened it, workers carry only what you kept, so say the rule again in plain words before you connect mail or chat, and the first mate records it in both places.
+Ask "what's in captain.md now?" to see the version you have.
 
 Once you run second mates, also put the rule in `data/captain-shared.md`, which second mates inherit, and in each second mate home's `config/brief-include.md`, since neither of your main home's copies reaches them.
 
@@ -254,6 +267,9 @@ Ask the first mate to set one up; each owner page lists what it needs.
 | Chart room ([chart-room.md](chart-room.md)) | A private local page showing where every project stands | Nothing extra |
 | Desk floater ([Mac](desk-floater.md), [Windows](desk-floater-windows.md)) | Push-to-talk button that types what you say into the first mate | A Deepgram API key, from a paid account at deepgram.com |
 | Spoken replies ([configuration](configuration.md#desk-voice-out-configspeak)) | The first mate reads the start of each reply aloud | An external speech shaper named in `config/speak`, which this repository does not include |
+| Bridge strip ([bridge-strip.md](bridge-strip.md)) | A strip across the top of the Herdr workspace with the STARSHIP wordmark, the crew's lamps and the battery | Herdr |
+| Desk ([desk.md](desk.md)) | `starship` opens your whole Herdr workspace and its Terminal windows in one go | Herdr and macOS Terminal |
+| Factory pane ([factory-pane.md](factory-pane.md)) | Every factory at a glance beside your work: what needs you, what each crew is doing this minute, what happened since you last looked, and a tab per factory with its live workers | Herdr |
 | Phone bridge page ([bridge-view.md](bridge-view.md)) | A phone page showing what needs you, with photo drop and hold-to-speak | Tailscale and Python 3.12 |
 | Dropped-threads digest ([configuration](configuration.md#dropped-threads-digest-configdropped-threads)) | A twice-daily "what is left hanging" summary | A scheduled job on this Mac |
 | Computer use ([macos-computer-use](../.agents/opt-in-skills/macos-computer-use/SKILL.md)) | Lets the agents operate Mac apps and windows | Peekaboo, which the first mate installs, and Mac Accessibility permissions |
@@ -261,6 +277,7 @@ Ask the first mate to set one up; each owner page lists what it needs.
 | Second opinion ([second-opinion.md](second-opinion.md)) | A rival AI model stress-tests a big design or decision before work starts | `config/second-opinion`; each review draws on your Claude plan, and the different-vendor pass on a Cursor plan |
 | Divergent ideas ([adhd.md](adhd.md)) | Fans out many options before a fuzzy, high-stakes choice | The `adhd-agent` CLI and `config/adhd` |
 | Prompt ledger ([configuration](configuration.md#captain-ledger-configcaptain-ledger)) | Writes every prompt you type to disk until the first mate has filed what you decided | `config/captain-ledger` |
+| Meeting intake ([meetings.md](meetings.md)) | Turns each recorded call or meeting into a one-line outcome, follow-ups the first mate starts, and items held for your decision | `config/meetings`; the call recorder, or the free Anarlog meeting recorder for the Mac |
 
 ## Keeping it current
 
@@ -278,8 +295,8 @@ Each step is small and proves one part of the system.
 **Day 1 - running and connected.**
 
 1. Finish [ONBOARDING.md](../ONBOARDING.md), including its first report.
-2. Record the outward-send standing rule from [Connectors and tools](#a-rounded-starter-set-for-a-work-setup), then add your connectors and check each with one real question.
-3. Tell the first mate three things about how you work, as standing preferences, then ask "what's in captain.md now?".
+2. Add your connectors from [Connectors and tools](#a-rounded-starter-set-for-a-work-setup) and check each with one real question; if you kept the outward-send rule in your first conversation, it already covers them, and if not, say it again first.
+3. Tell the first mate three more things about how you work, as standing preferences, then ask "what's in captain.md now?".
 4. Run `/bearings`.
 
 **Day 2 - a first investigation.**

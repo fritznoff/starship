@@ -19,6 +19,7 @@
 #                 "BACKLOG_RECONCILE: code-root <file> is not this home's <file>; ...",
 #                 "TANGLE: <remediation>",
 #                 "HOST_ENV: WSL: <problem> - <advice>",
+#                 "HOST_ENV: Linux on <arm arch>: no Chrome is installed ...",
 #                 "BOOTSTRAP_INFO: headless server: <board-access advice>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
@@ -34,6 +35,8 @@
 #                 "STACK_TOOLS: behind: <tool> installed <version>, latest|pinned
 #                  <version> (small update|quiet-window upgrade); ...",
 #                 "STACK_TOOLS: could not check: <tool>, ...",
+#                 "LEAK_PREPUSH: <checkout>: <problem>",
+#                 "MOTHERSHIP_MONITOR: <room|config line>: <problem>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING secondmate home is fast-forwarded, its target is
 #          firstmate's own current default-branch commit. A local worktree uses
@@ -117,6 +120,10 @@
 #          while networking is not mirrored (read through wslinfo, cmd.exe,
 #          and wslpath; silent when they are unavailable or cmd.exe or wslpath
 #          does not answer within 5 seconds).
+#          On Arm Linux (aarch64 or arm64), a server or WSL on a Windows on
+#          Arm PC alike, with no Chrome or Chromium on PATH it says browser
+#          checks are unavailable there, since Google ships no Chrome for Arm
+#          Linux; silent when a browser is installed.
 #          On a headless server (no DISPLAY or WAYLAND_DISPLAY, reached over
 #          SSH) without Tailscale up, it prints one BOOTSTRAP_INFO fact that
 #          review boards and dev servers are reached from the person's own
@@ -145,6 +152,13 @@
 #          sessions stay quiet.
 #          Bootstrap hooks (bin/fm-addon.sh) add their own read-only lines,
 #          which the hook's owner documents.
+#          Outside detect-only, the local phase installs or refreshes the
+#          pre-push leak check (bin/fm-leak-prepush.sh) on FM_ROOT and on the
+#          add-on checkout; LEAK_PREPUSH names a checkout it could not install on.
+#          Outside detect-only, the local phase also runs
+#          bin/fm-procevent-mothership.sh ensure when config/mothership-monitor
+#          exists or a Mothership room is registered; MOTHERSHIP_MONITOR names a
+#          room it could not arm or a malformed setting line.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -225,7 +239,11 @@
 #          told to leave that work to the lock holder. Unset/0 (the default)
 #          keeps detect-only meaning unlocked, exactly as before.
 #        fm-bootstrap.sh install <tool>...
-#          Install the named tools (only ones the captain approved).
+#          Install the named tools (only ones the captain approved). Every
+#          tool is attempted; exit 1 names the ones whose installer failed,
+#          and when treehouse or no-mistakes is among them says their GitHub
+#          release downloads fail together during a GitHub outage, so the
+#          right move is to try again in a few minutes.
 #        fm-bootstrap.sh lavish-compatible
 #          Exit 0 when lavish-axi meets LAVISH_AXI_BOARD_MIN, 1 otherwise,
 #          printing nothing; bin/fm-brief.sh uses it to gate scout Lavish hosting.
@@ -1348,7 +1366,7 @@ crew_dispatch_validate() {
   if $typed_active; then
     verified_harnesses=$(fm_control_harnesses | jq -Rsc 'split("\n") | map(select(length > 0))')
   else
-    verified_harnesses='["claude","codex","opencode","pi","pi-signed","grok","kimi","cursor","agy","muse","rovo","omp","devin","commandcode","polytoken","cortex","kiro"]'
+    verified_harnesses='["claude","codex","opencode","pi","pi-signed","grok","kimi","cursor","agy","muse","rovo","omp","devin","commandcode","polytoken","cortex","kiro","hermes"]'
   fi
   err=$(jq -r --argjson typed "$typed_active" --argjson verified_harnesses "$verified_harnesses" --arg provider_re "$FM_QUOTA_PROVIDER_ID_RE" '
     def verified($h): $verified_harnesses | index($h);
@@ -1633,8 +1651,22 @@ if [ "${1:-}" = "install" ]; then
     fi
     cmd=${cmd%%  #*}
     echo "installing $t: $cmd"
-    eval "$cmd"
+    # pipefail inside the subshell, so a `curl ... | sh` installer whose
+    # download fails (sh then reads nothing and exits 0) still counts as failed.
+    install_status=0
+    (set -o pipefail; eval "$cmd") || install_status=$?
+    [ "$install_status" -ne 0 ] || continue
+    echo "error: installing $t failed (exit $install_status)" >&2
+    failed_installs="${failed_installs:+$failed_installs }$t"
   done
+  if [ -n "${failed_installs:-}" ]; then
+    case " $failed_installs " in
+      *' treehouse '*|*' no-mistakes '*)
+        echo "error: not installed: $failed_installs - treehouse and no-mistakes download from GitHub releases, which fail together during a GitHub outage; try again in a few minutes" >&2 ;;
+      *) echo "error: not installed: $failed_installs" >&2 ;;
+    esac
+    exit 1
+  fi
   exit 0
 fi
 
@@ -1793,10 +1825,25 @@ host_env_wslconfig() {  # prints the Windows user's .wslconfig path when readabl
   printf '%s\n' "$path"
 }
 
+# host_env_arm_without_chrome <guide>: Google publishes no Chrome for Arm Linux,
+# so bin/fm-linux-setup.sh skips it there with a warning, on a server and inside
+# WSL on a Windows on Arm PC alike; this line keeps that fact in front of the
+# first mate, whose browser tool otherwise fails with an error that never says so.
+host_env_arm_without_chrome() {
+  case "$(uname -s 2>/dev/null) $(uname -m 2>/dev/null)" in
+    'Linux aarch64'|'Linux arm64')
+      command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1 \
+        || command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1 \
+        || echo "HOST_ENV: Linux on $(uname -m): no Chrome is installed and Google publishes none for Arm Linux, so browser checks (chrome-devtools-axi) are unavailable on this machine; everything else works, and an x86 machine has them ($1)"
+      ;;
+  esac
+}
+
 detect_host_environment() {
   local path seen='' wslconfig mode forwarding advised="$STATE/.host-env-headless-advised"
   # WSL exports WSL_DISTRO_NAME into every process it starts; nothing else does.
   if [ -n "${WSL_DISTRO_NAME:-}" ]; then
+    host_env_arm_without_chrome ONBOARDING-windows.md
     for path in "$FM_ROOT" "$FM_HOME" "$PROJECTS" "$PROJECTS"/*; do
       [ "$path" = "$PROJECTS/*" ] && continue
       path=$(host_env_resolve "$path")
@@ -1807,7 +1854,7 @@ detect_host_environment() {
     done
     mode=$(wslinfo --networking-mode 2>/dev/null | tr -d '\r' || true)
     if [ "$mode" = none ]; then
-      echo "HOST_ENV: WSL: Ubuntu has no network (WSL networking mode is none, which is where WSL falls back when this Windows cannot use networkingMode=mirrored) - remove the networkingMode=mirrored line from .wslconfig in your Windows user folder, then run wsl --shutdown from Windows (ONBOARDING-windows.md)"
+      echo "HOST_ENV: WSL: Ubuntu has no network (WSL networking mode is none; a Windows that cannot use networkingMode=mirrored normally falls back to NAT, where localhost still works and nothing needs changing, so this is the rarer no-network fallback) - remove the networkingMode=mirrored line from .wslconfig in your Windows user folder, then run wsl --shutdown from Windows (ONBOARDING-windows.md)"
     elif [ "$mode" != mirrored ] && wslconfig=$(host_env_wslconfig); then
       forwarding=$(LC_ALL=C awk -F= '
         /^[[:space:]]*\[/ { section = tolower($0); gsub(/[[:space:]]/, "", section) }
@@ -1821,6 +1868,7 @@ detect_host_environment() {
     return 0
   fi
   [ "$(uname -s 2>/dev/null)" = Linux ] || return 0
+  host_env_arm_without_chrome "ONBOARDING-linux-server.md step 1"
   [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] || return 0
   [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ] || return 0
   [ -e "$advised" ] && return 0
@@ -1987,6 +2035,14 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   if local_phase && [ -x "$SCRIPT_DIR/fm-opt-in-skills.sh" ]; then
     FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-opt-in-skills.sh" sync "$FM_ROOT" || true
   fi
+  # Keep the pre-push leak check on this checkout and the add-on's, so a push
+  # typed by hand is checked too; bin/fm-leak-prepush.sh owns the hook.
+  if local_phase && [ -x "$SCRIPT_DIR/fm-leak-prepush.sh" ]; then
+    "$SCRIPT_DIR/fm-leak-prepush.sh" install "$FM_ROOT" starship || true
+    if addon_root=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-addon.sh" root 2>/dev/null); then
+      "$SCRIPT_DIR/fm-leak-prepush.sh" install "$addon_root" addon || true
+    fi
+  fi
   # Adopt existing durable contribution links without making a network call.
   # Detection-only startup must never publish a check registration.
   if local_phase && command -v jq >/dev/null 2>&1 \
@@ -1998,6 +2054,13 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     && [ -d "$DATA" ] && [ -x "$SCRIPT_DIR/fm-pr-health.sh" ]; then
     "$SCRIPT_DIR/fm-pr-health.sh" arm >/dev/null \
       || echo "MISSING: the PR health monitor could not be armed; owned PRs are not watched"
+  fi
+  # Arm each room config/mothership-monitor switches on and retire the rest;
+  # bin/fm-procevent-mothership.sh owns the setting and prints only problems.
+  if local_phase && command -v jq >/dev/null 2>&1 && [ -x "$SCRIPT_DIR/fm-procevent-mothership.sh" ] \
+    && { [ -e "$CONFIG/mothership-monitor" ] || ls "$STATE"/procevent/mothership-*.source >/dev/null 2>&1; }; then
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+      "$SCRIPT_DIR/fm-procevent-mothership.sh" ensure 2>&1 || true
   fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
