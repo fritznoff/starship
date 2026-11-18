@@ -8,6 +8,13 @@
 #                                         [--effort <level>] [--account <entry>]
 #                                         (--note <text> | --note-file <path>)
 #
+# A local second mate's pane-writer lock is held across every send, and a
+# direct-line second mate that is talking with its owner
+# (bin/fm-direct-line-lib.sh) is refused every verb before anything is sent:
+# the first mate never interrupts, stops or relaunches a conversation the
+# owner is having. There is no override: the conversation ends only through
+# the mate's own `fm-direct-line.sh waiting --clear` or its bounded lapse.
+#
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
 # DATA plane: conversational text for the agent to read, always routing-marked
 # for a kind=secondmate target so the reply returns through the status path.
@@ -103,7 +110,11 @@
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
 #              Records a durable checkpoint and that note, exits the old agent,
-#              then delegates the launch to its single owner,
+#              stops (best effort, warning on failure) any process a ship's
+#              finished validation runs left in their copies, the same step
+#              cleanup takes (bin/fm-teardown.sh "Fix 2"), and never the local
+#              copy the replacement reuses, then delegates the launch to its
+#              single owner,
 #              bin/fm-spawn.sh --relaunch. A failure before publication keeps
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
@@ -206,6 +217,10 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-omp-profile-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-task-reap-lib.sh
+. "$SCRIPT_DIR/fm-task-reap-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -220,6 +235,7 @@ die() {  # <message>
 }
 
 CONTROL_LOCK=
+PANE_WRITER_STATE=
 CONTROL_LOCK_HELD=0
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
@@ -234,6 +250,10 @@ control_cleanup() {
   # the next lifecycle command for this task writes the same path.
   if [ -n "${FM_COMPOSER_DIALOG_SINK:-}" ]; then
     rm -f "$FM_COMPOSER_DIALOG_SINK"
+  fi
+  if [ -n "${PANE_WRITER_STATE:-}" ]; then
+    fm_pane_writer_release "$PANE_WRITER_STATE" || true
+    PANE_WRITER_STATE=
   fi
   if [ "$CONTROL_LOCK_HELD" = 1 ]; then
     CONTROL_LOCK_HELD=0
@@ -382,6 +402,38 @@ fi
 # instead, using the same `remote_host` signal bin/fm-send.sh routes on.
 if [ -n "$(fm_meta_get "$META" remote_host)" ]; then
   die "task $ID is a remotely placed secondmate on $(fm_meta_get "$META" remote_host); its agent runs outside this home, so no lifecycle action here could verify that it interrupted, stopped, or came back. Drive its lifecycle on that host, and reconcile it through the secondmate recovery path rather than this plane"
+fi
+
+# A local second mate's pane has other typists (bin/fm-pane-writer-lib.sh), so
+# this plane holds that home's pane-writer lock across everything it sends,
+# waiting up to FM_CONTROL_PANE_WAIT seconds (default 15) for another writer.
+# Under that lock, a direct-line mate talking with its owner is refused before
+# anything else is read or sent (bin/fm-direct-line-lib.sh owns that state).
+if [ "$(fm_meta_get "$META" kind)" = secondmate ]; then
+  # shellcheck source=bin/fm-direct-line-lib.sh
+  . "$SCRIPT_DIR/fm-direct-line-lib.sh"
+  # shellcheck source=bin/fm-pane-writer-lib.sh
+  . "$SCRIPT_DIR/fm-pane-writer-lib.sh"
+  MATE_HOME=$(fm_meta_get "$META" home)
+  [ -n "$MATE_HOME" ] || MATE_HOME=$(fm_meta_get "$META" worktree)
+  if [ -n "$MATE_HOME" ] && [ -d "$MATE_HOME/state" ]; then
+    pane_wait_until=$(( $(date +%s) + $(_fm_direct_line_number "${FM_CONTROL_PANE_WAIT:-}" 15) ))
+    # A lock that cannot be created at all (an unreadable home) is a lock no
+    # other typist can take either; the endpoint checks below then decide.
+    pane_rc=1
+    while [ "$pane_rc" = 1 ]; do
+      pane_rc=0
+      fm_pane_writer_try_acquire "$MATE_HOME/state" || pane_rc=$?
+      [ "$pane_rc" = 1 ] || break
+      [ "$(date +%s)" -lt "$pane_wait_until" ] \
+        || die "another writer is still typing into second mate $ID's pane; nothing was sent"
+      sleep 0.2
+    done
+    [ "$pane_rc" != 0 ] || PANE_WRITER_STATE="$MATE_HOME/state"
+    if fm_direct_line_talking "$STATE" "$ID" "$MATE_HOME"; then
+      die "second mate $ID is talking with its owner on the direct line ($FM_DIRECT_LINE_TALKING_REASON, until epoch $FM_DIRECT_LINE_TALKING_UNTIL); the first mate never interrupts, stops or relaunches that conversation. It ends when the mate runs 'fm-direct-line.sh waiting --clear' or the talking state lapses"
+    fi
+  fi
 fi
 
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
@@ -1224,6 +1276,24 @@ record_note() {
   esac
 }
 
+# A process a finished validation run left running (a test loop, a server)
+# outlives the agent that started it. Only finished runs' copies are touched
+# (bin/fm-nm-run-lib.sh's fm_nm_task_validation_copies), never the local copy
+# the endpoint and the replacement live in. Best effort: the old agent is
+# already stopped, so a failure warns rather than blocking its replacement.
+reap_finished_validation_copies() {
+  local copy
+  local -a copies=()
+  while IFS= read -r copy; do
+    [ -n "$copy" ] && copies+=("$copy")
+  done <<EOF
+$(fm_nm_task_validation_copies "$WT" 10)
+EOF
+  [ "${#copies[@]}" -gt 0 ] || return 0
+  fm_reap_task_processes relaunch "validation copy" "$ID" "leaving them running" "${copies[@]}" \
+    || echo "warning: some processes left in $ID's finished validation copies could not be stopped; relaunching anyway" >&2
+}
+
 do_relaunch() {
   local exit_result state note_line
   local -a spawn_args
@@ -1267,6 +1337,7 @@ do_relaunch() {
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  [ "$KIND" != ship ] || reap_finished_validation_copies
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
   # per-task harness wiring before arming the new one, so nothing to do here.

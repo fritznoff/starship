@@ -16,7 +16,7 @@
 # PR instead of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--pr <auto|manual>] [--outward '<permission>'] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--outward '<permission>'] [--herdr-lab]
-#        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#        fm-brief.sh <task-id> --secondmate [--direct-line] {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md, presented by a page beside it at
 #   data/<task-id>/page.html (no branch, no push, no PR), and the worktree is scratch.
@@ -31,6 +31,10 @@
 #   firstmate repo itself (its home is a firstmate worktree, its crews take pooled
 #   worktrees of the same repo). It is mutually exclusive with a project list, and
 #   omitting both still fails loudly so an accidental omission is never silent.
+#   --direct-line opts the charter into the direct line (docs/direct-line.md):
+#   the captain may talk to the mate directly, and the charter carries the
+#   exact opt-in line bin/fm-direct-line-lib.sh reads plus its rules. Without
+#   it the charter is off, the default.
 #   Set FM_SECONDMATE_CHARTER='<charter>' to fill the charter text.
 #   Set FM_SECONDMATE_SCOPE='<scope>' to write a routing scope distinct from the charter text.
 #   --herdr-lab is mandatory when the task will issue Herdr lifecycle commands.
@@ -103,8 +107,8 @@
 # delivery contract.
 # --outward '<permission>[; <permission>...]' records what this job may do
 # outward through connected accounts or the browser on the captain's word,
-# such as 'send email to a@example.com' (docs/configuration.md "Worker outward
-# actions" owns the words; bin/fm-outward-check.py parse checks them and a
+# such as 'send email to a@example.com' (docs/fork-configuration.md "Worker
+# outward actions" owns the words; bin/fm-outward-check.py parse checks them and a
 # phrase it does not understand stops the scaffold). Ship and scout briefs
 # always carry a "# Outward actions" section whose fixed
 # "Outward permission: <permissions|none>" line bin/fm-spawn.sh requires to
@@ -156,15 +160,30 @@
 # second owner of a contract that must stay current across relaunches.
 # A home may carry standing worker instructions without editing this tracked
 # script: when config/brief-include.md exists under the active home, ship and
-# scout scaffolds append its text verbatim as their last section, "# Home brief
-# additions", which defers to every other section of the brief. It goes last
-# because the machine-read `# Task` heading resolves to its first match, so
+# scout scaffolds append its text verbatim after the standard contract as
+# "# Home brief additions", which defers to every other section of the brief
+# except a factory profile below it, which in turn defers to it. It goes at the
+# end because the machine-read `# Task` heading resolves to its first match, so
 # appended text can never shadow it; a later scout promotion appends its ship
 # contract below it, which that position-free deference already covers. An
 # absent or blank file changes nothing; a present path that is not a readable
 # regular file, or text carrying its own "Delivery contract: mode=" line (which
 # a later scout promotion could not outrank), stops the scaffold before
 # anything is written. Secondmate charters never take it.
+# A factory profile comes after it: when data/factories.md exists and the
+# factory that claims <repo-name> (bin/fm-factory.py profile owns that lookup,
+# the same one the Factory pane maps work with) has a Rules: list, ship and
+# scout scaffolds end with a "# Factory profile (private context, never
+# quote)" section holding those rules in file order, never its Learned: lines,
+# each as a list item, under a line saying every other section of the brief,
+# the home additions included, wins on any conflict and a line forbidding
+# copying the text into PR text, commit messages or the no-mistakes intent. A list item can never be a heading or a "Delivery contract:" line, so
+# the profile cannot shadow the machine-read sections. Rules whose list, one
+# "- " line per item, is over the cap fm-factory.py profile reports (the
+# size the Factory pane shows against it) are left out
+# whole, never truncated, with a warning naming the factory; no registry, no
+# claiming factory or no rules leaves the brief byte-for-byte unchanged.
+# Charters never take it.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -231,6 +250,7 @@ case "$CONFIG" in /*) ;; *) CONFIG="$PWD/$CONFIG" ;; esac
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+DIRECT_LINE=0
 MODE=
 MODE_SET=0
 BRANCH_PREFIX=fm/
@@ -276,6 +296,7 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --direct-line) DIRECT_LINE=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
@@ -438,6 +459,10 @@ if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   exit 1
 fi
 
+if [ "$DIRECT_LINE" -eq 1 ] && [ "$KIND" != secondmate ]; then
+  echo "error: --direct-line applies only to --secondmate charters" >&2
+  exit 1
+fi
 if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo "error: --no-projects applies only to --secondmate charters" >&2
   exit 1
@@ -459,13 +484,57 @@ if [ "$KIND" != secondmate ] && { [ -e "$BRIEF_INCLUDE_FILE" ] || [ -L "$BRIEF_I
   [ -n "$(printf '%s' "$BRIEF_INCLUDE_BODY" | tr -d '[:space:]')" ] || BRIEF_INCLUDE_BODY=
 fi
 
-# Append the include as the last section of a ship or scout scaffold.
+# The optional factory profile is read before anything is written too. Only a
+# present data/factories.md runs the lookup, so a home without one never needs
+# python3 and gets exactly the brief it always did.
+FACTORY_PROFILE_NAME=
+FACTORY_PROFILE_BODY=
+if [ "$KIND" != secondmate ] && [ -f "$DATA/factories.md" ]; then
+  profile_out=
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "warning: $DATA/factories.md is present but python3 is not, so no factory profile was added" >&2
+  elif ! profile_out=$(python3 "$SCRIPT_DIR/fm-factory.py" profile "${POS[1]:-}" --data-dir "$DATA"); then
+    echo "warning: could not read the factory profile from $DATA/factories.md, so none was added" >&2
+    profile_out=
+  fi
+  if [ -n "$profile_out" ]; then
+    # The first line carries the size and cap fm-factory.py measures, the
+    # same numbers the Factory pane shows, then the factory's name.
+    read -r profile_size profile_cap profile_name <<< "${profile_out%%$'\n'*}"
+    profile_body=$(printf '%s\n' "$profile_out" | sed '1d; s/^/- /')
+    case "$profile_size$profile_cap" in
+      ''|*[!0-9]*)
+        echo "warning: could not read the factory profile's size from bin/fm-factory.py, so none was added" >&2 ;;
+      *)
+        if [ "$profile_size" -gt "$profile_cap" ]; then
+          echo "warning: factory '$profile_name' profile is $profile_size characters, over the $profile_cap-character cap, so the whole profile was left out of this brief" >&2
+        else
+          FACTORY_PROFILE_NAME=$profile_name
+          FACTORY_PROFILE_BODY=$profile_body
+        fi ;;
+    esac
+  fi
+fi
+
+# Append the include, then any factory profile, as the last sections of a
+# ship or scout scaffold.
 append_brief_include() {
-  [ -n "$BRIEF_INCLUDE_BODY" ] || return 0
-  printf '\n%s\n%s\n%s\n' \
-    '# Home brief additions' \
-    "These are this home's standing additions; every other section of this brief takes precedence over anything here that conflicts." \
-    "$BRIEF_INCLUDE_BODY" >> "$BRIEF"
+  if [ -n "$BRIEF_INCLUDE_BODY" ]; then
+    local include_sections='every other section of this brief'
+    [ -z "$FACTORY_PROFILE_BODY" ] || include_sections='every other section of this brief except the factory profile below'
+    printf '\n%s\n%s\n%s\n' \
+      '# Home brief additions' \
+      "These are this home's standing additions; $include_sections takes precedence over anything here that conflicts." \
+      "$BRIEF_INCLUDE_BODY" >> "$BRIEF"
+  fi
+  [ -n "$FACTORY_PROFILE_BODY" ] || return 0
+  # shellcheck disable=SC2016 # The backticks are literal brief text.
+  printf '\n%s\n%s\n%s\n%s\n%s\n' \
+    '# Factory profile (private context, never quote)' \
+    "This project belongs to the $FACTORY_PROFILE_NAME factory, and these are that factory's own notes for its work." \
+    'Every other section of this brief, the home additions included, wins over anything here that conflicts.' \
+    'Never copy or quote this text into a pull request title, body or comment, a commit message, or the no-mistakes `--intent`.' \
+    "$FACTORY_PROFILE_BODY" >> "$BRIEF"
 }
 
 BRIEF="$DATA/$ID/brief.md"
@@ -557,6 +626,28 @@ else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
+if [ "$DIRECT_LINE" -eq 1 ]; then
+  CHANNEL_OPENING="The main firstmate does not read this chat, and the captain reads it only through the direct line below: the main firstmate sees only what is appended to $STATUS_FILE.
+That file is your parent channel: every outcome the local AGENTS.md tells a firstmate to bring to the captain is also one appended line there, even when you have already told the captain in this chat."
+  # shellcheck source=bin/fm-direct-line-lib.sh
+  . "$SCRIPT_DIR/fm-direct-line-lib.sh"
+  DIRECT_LINE_SECTION="
+# Direct line to the captain
+$FM_DIRECT_LINE_CHARTER_LINE
+The captain may talk to you directly: through bin/fm-direct-line.sh, which types into this pane, or at this pane's own keyboard.
+A message with no from-firstmate marker is the captain; answer the captain in this chat, conversationally.
+bin/fm-direct-line.sh copies every message the captain sends you to the parent channel itself, so a conversational reply needs no parent line; a decision, blocker, failure, or recommendation still does, as the section above says.
+The captain's word outranks the main firstmate's: when a request from the main firstmate conflicts with what the captain told you, follow the captain and append a \`needs-decision\` line naming the conflict.
+A call held for the captain closes by script when the captain's direct-line message names it, and such a message arrives after \`[direct line message <id> answers <task-id>]\`; never close a held call yourself from your own reading of the chat.
+If that call is still open a minute later, run \`bin/fm-direct-line.sh answered <task-id> --client-id <id>\` citing that message; it is the only way you may close a held call.
+When the captain answers a held call any other way, such as at this pane's keyboard, append a \`needs-decision\` line quoting the captain's words and naming the call, so the main firstmate records it.
+When you ask the captain something and wait for the answer, run \`bin/fm-direct-line.sh waiting\` so the main firstmate leaves you alone, and \`bin/fm-direct-line.sh waiting --clear\` once you have it.
+"
+else
+  CHANNEL_OPENING="Nobody reads this chat: the captain and the main firstmate see only what is appended to $STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
+That file is your parent channel, and in this home it IS the captain: every sentence you would say to the captain, and every outcome the local AGENTS.md tells a firstmate to bring to the captain, is one appended line there, never chat."
+  DIRECT_LINE_SECTION=
+fi
 cat > "$BRIEF" <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
@@ -579,11 +670,10 @@ Act only on tasks the main firstmate routes to you.
 Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.
 
 # The captain and the parent channel
-Nobody reads this chat: the captain and the main firstmate see only what is appended to $STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
-That file is your parent channel, and in this home it IS the captain: every sentence you would say to the captain, and every outcome the local AGENTS.md tells a firstmate to bring to the captain, is one appended line there, never chat.
+$CHANNEL_OPENING
 Your own machinery publishes the durable facts about your crew's work for you (\`bin/fm-parent-channel-lib.sh\`): a child's terminal done or failed line with its note and PR on every supervision poll, a PR-ready line when you register a PR, a task you hold for the captain and its answer, a merge, and a child's final line at cleanup all reach the parent channel from the scripts that record them, whether or not you append anything.
 What only you can append is judgement: the answer to a marked request below, a recommendation or caveat on a delivered outcome, a blocker or failure of your own, and anything else you would otherwise say to the captain.
-
+$DIRECT_LINE_SECTION
 # Requests from the main firstmate
 You are a firstmate in your own home, so an incoming message reaches you in your own chat.
 You must distinguish who it is from, because the answer goes to a different place.

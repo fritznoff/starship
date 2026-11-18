@@ -260,7 +260,7 @@ jobs:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -631,6 +631,12 @@ jobs:
           # treats as an unbound variable under set -u.
           FM_TEST_STOCK_BASH=1 /bin/bash bin/fm-test-tap-verify.sh \
             tests/fm-watch-triage.test.sh
+
+          # Same shape for the lock-create TERM regression: only stock Bash
+          # leaves a bare `local NAME` set, which let watcher cleanup join an
+          # unrelated child that waits for the watcher.
+          FM_TEST_STOCK_BASH=1 /bin/bash bin/fm-test-tap-verify.sh \
+            tests/fm-watcher-lock.test.sh
 
           # The fork-free hot-path helpers must stay byte-identical to the
           # commands they replace under stock Bash 3.2, which lacks the

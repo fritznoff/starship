@@ -42,6 +42,9 @@
 #   (q3) no-mistakes + squash-merged, same file, different content   -> REFUSE
 #   (q4) no-mistakes + squash-merged rebased local plus extra commit -> REFUSE
 #   (q5) gh down + squash-merged stale local, content not in default -> REFUSE
+#   (q6) GitLab MR merged by squash or train, main moved on, MR head unfetched,
+#        config/park-on-review or config/auto-land present -> ALLOW; open MR -> REFUSE;
+#        neither flag -> REFUSE without a glab read, as before the opt-in
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -1177,6 +1180,26 @@ test_cancelled_run_without_merged_pr_stays_failed() {
   pass "a cancelled run without a merged PR from its own PR step stays failed"
 }
 
+# A merge-time cleanup request belongs to the detached cleanup that runs this
+# teardown: only that cleanup removes it, after its outcome report is saved, so
+# a cleanup that dies mid-teardown is still retried by the next park tick.
+test_teardown_leaves_the_merge_cleanup_request_to_its_cleanup() {
+  local case_dir wt_head rc
+  case_dir=$(make_case keep-cleanup-request)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "merged work"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  printf 'pr=https://github.com/example/repo/pull/7\n' > "$case_dir/state/task-x1.review-park-land"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "keep-cleanup-request: teardown should succeed when work is merged into local main"
+  assert_present "$case_dir/state/task-x1.review-park-land" "teardown removed the merge cleanup request its cleanup still owns"
+  pass "teardown leaves a merge cleanup request for the detached cleanup that owns it"
+}
+
 # Send the task branch's commits to <target> on origin from a separate clone, so
 # the task copy's tracking refs do not show them. Args: case_dir target
 land_task_commits_from_other_clone() {
@@ -1734,6 +1757,83 @@ test_squash_merged_forgejo_pr_allows_when_main_moved_on() {
       || fail "forgejo-merged-$merged: teardown did not read the Forgejo pull request through tea"
   done
   pass "teardown proves a Forgejo task landed from the merged pull request when the content check is inconclusive"
+}
+
+add_glab_mr_for_head() {
+  local case_dir=$1 state=$2 head=$3
+  cat > "$case_dir/fakebin/glab" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/glab.log"
+[ "\${1:-} \${2:-}" = "mr view" ] || exit 1
+printf '{"state":"%s","sha":"%s","squash_commit_sha":"%s"}\n' '$state' '$head' 0000000000000000000000000000000000000001
+SH
+  chmod +x "$case_dir/fakebin/glab"
+}
+
+# A GitLab merge request squash-merged (or merged by a merge train) lands a
+# commit on main that is not the MR head, and main then moved on over the same
+# lines, so the content check is inconclusive. The MR's own head is published
+# only as refs/merge-requests/<n>/head, which this copy never fetched. With
+# config/park-on-review or config/auto-land present, teardown must read the MR
+# through glab, fetch that ref, and accept the merged record; the same history
+# with the MR still open refuses. With neither flag the merged MR is never read
+# through glab and teardown refuses on the inconclusive content check.
+test_squash_merged_gitlab_mr_allows_when_main_moved_on() {
+  local case_dir rc local_head pr_head tmp scenario state expected
+  for scenario in merged:park-on-review merged:auto-land opened:park-on-review merged:; do
+    state=${scenario%%:*}
+    case_dir=$(make_case "gitlab-mr-$state-${scenario#*:}")
+    write_meta "$case_dir" no-mistakes ship
+    wt_commit_file "$case_dir" feature.txt hello "add feature"
+    local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+    tmp="$case_dir/_pipeline"
+    git clone -q "$case_dir/origin.git" "$tmp"
+    git -C "$tmp" fetch -q "$case_dir/wt" "fm/task-x1:fm/task-x1"
+    git -C "$tmp" checkout -q fm/task-x1
+    printf '%s\n' pipeline > "$tmp/fix.txt"
+    git -C "$tmp" add -- fix.txt
+    git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "no-mistakes fix"
+    pr_head=$(git -C "$tmp" rev-parse HEAD)
+    git -C "$tmp" push -q origin "HEAD:refs/merge-requests/7/head"
+    git -C "$tmp" checkout -q main
+    printf '%s\n' reworded > "$tmp/feature.txt"
+    git -C "$tmp" add -- feature.txt
+    git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "squash then main rewords"
+    git -C "$tmp" push -q origin main
+    rm -rf "$tmp"
+    ! git -C "$case_dir/wt" cat-file -e "$pr_head^{commit}" 2>/dev/null \
+      || fail "gitlab-mr-$state: test setup bug, the MR head is already local"
+    printf '%s\n' 'pr=https://gitlab.example.com/team/sub/repo/-/merge_requests/7' \
+      >> "$case_dir/state/task-x1.meta"
+    add_gh_axi_error "$case_dir"
+    add_glab_mr_for_head "$case_dir" "$state" "$pr_head"
+    [ -z "${scenario#*:}" ] || : > "$case_dir/config/${scenario#*:}"
+
+    set +e
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    if [ -z "${scenario#*:}" ]; then
+      expect_code 1 "$rc" "gitlab-mr-no-flag: teardown exit"$'\n'"$(cat "$case_dir/stderr")"
+      [ ! -e "$case_dir/glab.log" ] || fail "gitlab-mr-no-flag: teardown read the merge request through glab without an opt-in flag"
+      grep -q REFUSED "$case_dir/stderr" || fail "gitlab-mr-no-flag: no REFUSED line in stderr"
+      assert_refusal_retained_task_state "$case_dir" gitlab-mr-no-flag "$local_head"
+      continue
+    fi
+    expected=1
+    [ "$state" != merged ] || expected=0
+    expect_code "$expected" "$rc" "gitlab-mr-$scenario: teardown exit"$'\n'"$(cat "$case_dir/stderr")"
+    grep -qF -- 'mr view 7 -R https://gitlab.example.com/team/sub/repo -F json' "$case_dir/glab.log" \
+      || fail "gitlab-mr-$scenario: teardown did not read the merge request through glab"
+    if [ "$state" = merged ]; then
+      ! grep -q REFUSED "$case_dir/stderr" || fail "gitlab-mr-merged: teardown printed a REFUSED line"
+    else
+      grep -q REFUSED "$case_dir/stderr" || fail "gitlab-mr-opened: no REFUSED line in stderr"
+      assert_refusal_retained_task_state "$case_dir" gitlab-mr-opened "$local_head"
+    fi
+  done
+  pass "teardown proves a squash- or train-merged GitLab MR landed from the MR head only with an opt-in flag, and refuses an open one"
 }
 
 test_squash_merged_same_file_different_content_refuses() {
@@ -5912,6 +6012,109 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
+# A no-mistakes state database recording validation runs for the case's
+# project. Each row: "<run-id> <branch> <status> <worktree-dir>".
+seed_validation_runs() {  # <case-dir> <row>...
+  local case_dir=$1
+  shift
+  mkdir -p "$case_dir/nm/worktrees/r1"
+  python3 - "$case_dir/nm/state.sqlite" "$case_dir/project" "$(date +%s)" "$@" <<'PY'
+import sqlite3
+import sys
+
+database, project, created = sys.argv[1], sys.argv[2], int(sys.argv[3])
+db = sqlite3.connect(database)
+db.executescript("""
+    CREATE TABLE repos (id TEXT PRIMARY KEY, working_path TEXT NOT NULL UNIQUE);
+    CREATE TABLE runs (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, branch TEXT NOT NULL,
+                       status TEXT NOT NULL, created_at INTEGER NOT NULL, worktree_dir TEXT);
+""")
+db.execute("INSERT INTO repos VALUES ('r1', ?)", (project,))
+for row in sys.argv[4:]:
+    run_id, branch, status, copy = row.split(" ", 3)
+    db.execute("INSERT INTO runs VALUES (?, 'r1', ?, ?, ?, ?)", (run_id, branch, status, created + 1, copy))
+db.commit()
+PY
+}
+
+# Start a detached process that lives until killed; echoes its pid.
+start_detached() {  # <cwd> <command>...
+  local cwd=$1 pid
+  shift
+  ( cd "$cwd" && exec "$@" ) > /dev/null 2>&1 &
+  pid=$!
+  disown
+  printf '%s\n' "$pid"
+}
+
+# A finished job's validation run left processes behind: a test loop started
+# in its validation copy (which no-mistakes has since deleted), and a server
+# run from a path inside the task copy by a shell that sat elsewhere. Cleanup
+# must stop both, log what it stopped, and leave alone every process of
+# another task's validation copy, of this task's still-running run, a sibling
+# copy whose path only shares a prefix, and a process merely started with the
+# copy as an argument.
+test_leaked_validation_copy_processes_are_reaped() {
+  local case_dir rc copy live_copy other_copy loop server other live sibling dir_arg pid
+  local survivors="" stopped=""
+  case_dir=$(make_case leaked-validation-copy-reap)
+  write_meta "$case_dir" no-mistakes ship
+  mkdir -p "$case_dir/wt/serve"
+  printf 'import time\ntime.sleep(300)\n' > "$case_dir/wt/serve/server.py"
+  git -C "$case_dir/wt" add serve/server.py
+  land_shippable_commit "$case_dir"
+  copy="$case_dir/nm/worktrees/r1/01DONE"
+  live_copy="$case_dir/nm/worktrees/r1/01LIVE"
+  other_copy="$case_dir/nm/worktrees/r1/01OTHER"
+  seed_validation_runs "$case_dir" \
+    "01DONE fm/task-x1 completed $copy" \
+    "01LIVE fm/task-x1 running $live_copy" \
+    "01OTHER fm/task-y2 completed $other_copy"
+  mkdir -p "$copy/tests" "$live_copy" "$other_copy" "$case_dir/wt-sibling" "$case_dir/elsewhere"
+  printf 'while :; do sleep 1; done\n' > "$copy/tests/.tmp-one.test.sh"
+  cp "$case_dir/wt/serve/server.py" "$case_dir/elsewhere/server.py"
+
+  loop=$(start_detached "$copy" bash tests/.tmp-one.test.sh)
+  server=$(start_detached "$case_dir/elsewhere" python3 "$case_dir/wt/serve/server.py")
+  other=$(start_detached "$other_copy" sleep 300)
+  live=$(start_detached "$live_copy" sleep 300)
+  sibling=$(start_detached "$case_dir/elsewhere" python3 "$case_dir/elsewhere/server.py" "$case_dir/wt-sibling/x")
+  dir_arg=$(start_detached "$case_dir/elsewhere" python3 "$case_dir/elsewhere/server.py" "$case_dir/wt")
+  sleep 0.5
+  # no-mistakes removes a finished run's copy; the loop keeps running from it.
+  rm -rf -- "${copy:?}"
+  for pid in "$loop" "$server" "$other" "$live" "$sibling" "$dir_arg"; do
+    kill -0 "$pid" 2>/dev/null || fail "leaked-validation-copy-reap: setup process $pid did not start"
+  done
+
+  rc=0
+  NM_HOME="$case_dir/nm" FM_FAKE_AXI_OVERVIEW="repo: $case_dir/project" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  for pid in "$loop" "$server"; do
+    if kill -0 "$pid" 2>/dev/null; then survivors="$survivors $pid"; fi
+  done
+  for pid in "$other" "$live" "$sibling" "$dir_arg"; do
+    kill -0 "$pid" 2>/dev/null || stopped="$stopped $pid"
+  done
+  for pid in "$loop" "$server" "$other" "$live" "$sibling" "$dir_arg"; do
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+  expect_code 0 "$rc" "leaked-validation-copy-reap: teardown should succeed"
+  [ -z "$survivors" ] || fail "leaked-validation-copy-reap: leaked processes survived cleanup:$survivors"
+  [ -z "$stopped" ] || fail "leaked-validation-copy-reap: cleanup stopped processes outside this task's copies:$stopped"
+  assert_grep "reaping leaked validation copy process" "$case_dir/stderr" \
+    "leaked-validation-copy-reap: teardown did not report the validation copy reap"
+  assert_grep "teardown: stopping $loop bash tests/.tmp-one.test.sh" "$case_dir/stderr" \
+    "leaked-validation-copy-reap: teardown did not log the stopped test loop"
+  assert_grep "teardown: stopping $server " "$case_dir/stderr" \
+    "leaked-validation-copy-reap: teardown did not log the stopped server"
+  assert_grep "$case_dir/wt/serve/server.py" "$case_dir/stderr" \
+    "leaked-validation-copy-reap: teardown did not log the stopped server's command"
+  pass "cleanup stops processes left in the task's copy and finished validation copies, and nothing else"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -6419,6 +6622,40 @@ test_retained_sources_still_reach_the_ordinary_refusal() {
 }
 
 test_teardown_preserves_opencode_busy_plugin_on_pool_return
+
+# An orphan status log archived by record hygiene must survive status-archive
+# retention: the prune counts 30 days from archive time, not the log's last write.
+test_record_hygiene_archive_survives_status_archive_prune() {
+  local case_dir rc=0
+  case_dir=$(make_case record-hygiene-archive-retention)
+  write_meta "$case_dir" local-only ship
+  touch "$case_dir/config/status-archive"
+  printf 'done: complete\n' > "$case_dir/state/task-x1.status"
+  printf 'failed [at=1]: orphan from a lost task\n' > "$case_dir/state/orphan-x2.status"
+  touch -t 200001010000 "$case_dir/state/orphan-x2.status"
+  FM_TEST_LIB_SOURCED=1 bash -c '
+    SCRIPT_DIR="$1/bin"; STATE="$2/state"; DATA="$2/data"
+    # shellcheck source=bin/fm-classify-lib.sh
+    . "$SCRIPT_DIR/fm-classify-lib.sh"
+    # shellcheck source=bin/fm-tasks-axi-lib.sh
+    . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+    # shellcheck source=bin/fm-backlog-transition-lib.sh
+    . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+    # shellcheck source=bin/fm-backend.sh
+    . "$SCRIPT_DIR/fm-backend.sh"
+    # shellcheck source=bin/fm-timeout-lib.sh
+    . "$SCRIPT_DIR/fm-timeout-lib.sh"
+    # shellcheck source=bin/fm-record-hygiene-lib.sh
+    . "$SCRIPT_DIR/fm-record-hygiene-lib.sh"
+    record_hygiene_report
+  ' _ "$ROOT" "$case_dir" > "$case_dir/hygiene.out" 2>&1 || fail "record hygiene archive pass failed: $(cat "$case_dir/hygiene.out")"
+  assert_present "$case_dir/data/orphan-x2/status.log" "record hygiene did not archive the orphan status log"
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "status-archive teardown after record hygiene: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/data/task-x1/status.log" "status-archive teardown did not archive its own task"
+  assert_present "$case_dir/data/orphan-x2/status.log" "teardown pruned a status log record hygiene just archived"
+  pass "a status log archived by record hygiene survives the next status-archive teardown"
+}
 
 # Archive coverage uses the real teardown entry point over isolated homes.
 test_status_archive_opt_in() {
@@ -7018,6 +7255,7 @@ test_hidden_untracked_work_refuses_before_return
 test_content_fallback_git_capability_boundary
 test_work_written_at_reap_boundary_is_preserved
 test_status_archive_opt_in
+test_record_hygiene_archive_survives_status_archive_prune
 test_record_export_config_absent_never_reads_the_exporter
 test_record_export_unopted_symlinked_config_does_not_block_teardown
 test_record_export_archives_before_teardown_or_preserves_sources_on_failure
@@ -7054,6 +7292,7 @@ test_untimed_ready_report_keeps_outcome_unknown
 test_scout_with_report_records_reported
 test_cancelled_run_after_merged_pr_records_pass
 test_cancelled_run_without_merged_pr_stays_failed
+test_teardown_leaves_the_merge_cleanup_request_to_its_cleanup
 test_landed_on_other_origin_branch_with_stale_refs_allows
 test_refresh_failure_does_not_read_as_landed
 test_refreshed_refs_still_refuse_unreachable_commits
@@ -7106,6 +7345,7 @@ test_merged_pr_patch_matching_preserves_indentation
 test_merged_pr_with_later_local_commit_refuses
 test_squash_merged_rebased_branch_allows
 test_squash_merged_forgejo_pr_allows_when_main_moved_on
+test_squash_merged_gitlab_mr_allows_when_main_moved_on
 test_squash_merged_same_file_different_content_refuses
 test_squash_merged_rebased_local_with_unlanded_commit_refuses
 test_squash_merged_stale_local_refuses_when_forge_unreachable
@@ -7183,6 +7423,7 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
+test_leaked_validation_copy_processes_are_reaped
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed

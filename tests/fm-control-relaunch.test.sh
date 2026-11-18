@@ -182,6 +182,14 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
+  # Hermetic no-mistakes: the bare `axi` overview answers FM_FAKE_AXI_OVERVIEW
+  # (empty by default, so no task runs resolve) and nothing else answers.
+  cat > "$fb/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" = "axi " ] && printf '%s\n' "${FM_FAKE_AXI_OVERVIEW:-}"
+exit 0
+SH
+  chmod +x "$fb/no-mistakes"
   # fm-spawn's launch-binary preflight resolves and `--version`-probes the
   # harness binary before creating the endpoint, so every harness this suite
   # relaunches onto must exist on the fake PATH regardless of what the host has
@@ -398,6 +406,96 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" "the replacement launch must enter the recorded worktree"
   assert_grep "Firstmate operational input waiting: read" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+# A finished validation run left a test loop running from its copy, which
+# no-mistakes has since deleted. Relaunch stops it before the replacement
+# starts, and leaves alone a process in the local copy the replacement reuses
+# and one in a run that is still validating.
+test_relaunch_stops_processes_left_in_finished_validation_copies() {
+  local dir out rc done_copy live_copy loop in_wt live pid stopped=""
+  dir=$(new_case validation-reap rl9)
+  add_ship_task "$dir" rl9 claude
+  done_copy="$dir/nm/worktrees/r1/01DONE"
+  live_copy="$dir/nm/worktrees/r1/01LIVE"
+  mkdir -p "$done_copy/tests" "$live_copy"
+  python3 - "$dir/nm/state.sqlite" "$dir/proj" "$(date +%s)" "$done_copy" "$live_copy" <<'PY'
+import sqlite3
+import sys
+
+database, project, created, done_copy, live_copy = sys.argv[1:]
+db = sqlite3.connect(database)
+db.executescript("""
+    CREATE TABLE repos (id TEXT PRIMARY KEY, working_path TEXT NOT NULL UNIQUE);
+    CREATE TABLE runs (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, branch TEXT NOT NULL,
+                       status TEXT NOT NULL, created_at INTEGER NOT NULL, worktree_dir TEXT);
+""")
+db.execute("INSERT INTO repos VALUES ('r1', ?)", (project,))
+db.execute("INSERT INTO runs VALUES ('01DONE', 'r1', 'task-rl9', 'completed', ?, ?)", (int(created) + 1, done_copy))
+db.execute("INSERT INTO runs VALUES ('01LIVE', 'r1', 'task-rl9', 'running', ?, ?)", (int(created) + 2, live_copy))
+db.commit()
+PY
+  printf 'while :; do /bin/sleep 1; done\n' > "$done_copy/tests/.tmp-one.test.sh"
+  ( cd "$done_copy" && exec bash tests/.tmp-one.test.sh ) > /dev/null 2>&1 &
+  loop=$!
+  ( cd "$dir/wt" && exec /bin/sleep 300 ) > /dev/null 2>&1 &
+  in_wt=$!
+  ( cd "$live_copy" && exec /bin/sleep 300 ) > /dev/null 2>&1 &
+  live=$!
+  disown "$loop" "$in_wt" "$live"
+  /bin/sleep 0.5
+  rm -rf -- "${done_copy:?}"
+  kill -0 "$loop" 2>/dev/null || fail "validation-reap: setup loop did not start"
+
+  out=$(NM_HOME="$dir/nm" FM_FAKE_AXI_OVERVIEW="repo: $dir/proj" \
+    run_control "$dir" rl9 relaunch --note "validation loop left behind"); rc=$?
+
+  local loop_alive=0
+  kill -0 "$loop" 2>/dev/null && loop_alive=1
+  for pid in "$in_wt" "$live"; do
+    kill -0 "$pid" 2>/dev/null || stopped="$stopped $pid"
+  done
+  for pid in "$loop" "$in_wt" "$live"; do
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+  expect_code 0 "$rc" "validation-reap: the relaunch should succeed"$'\n'"$out"
+  [ "$loop_alive" = 0 ] || fail "validation-reap: the loop left in a finished validation copy survived the relaunch"
+  [ -z "$stopped" ] || fail "validation-reap: relaunch stopped processes outside finished validation copies:$stopped"
+  assert_contains "$out" "relaunch: stopping $loop bash tests/.tmp-one.test.sh" \
+    "validation-reap: relaunch did not log what it stopped"
+  assert_contains "$out" "relaunched rl9 harness=claude" "validation-reap: the replacement should still launch"
+  pass "fm-control relaunch: processes left in finished validation copies are stopped, nothing else"
+}
+
+# A lane relaunched after its PR was recorded keeps that PR as its record's
+# tail, so the armed merge poll still validates against it.
+test_relaunch_keeps_a_recorded_pr_valid_for_the_merge_poll() {
+  local dir out rc url=https://github.com/example/repo/pull/7 check
+  dir=$(new_case keeps-pr rl44)
+  add_ship_task "$dir" rl44 claude
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *headRefOid*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+  *isDraft*) printf '%s\n' '{"isDraft":false}' ;;
+  *state*) printf '%s\n' MERGED ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "$dir/fakebin/gh"
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$dir/home/state" "$ROOT/bin/fm-pr-check.sh" rl44 "$url" 2>&1); rc=$?
+  expect_code 0 "$rc" "the executable merge-poll registration should succeed"$'\n'"$out"
+  check="$dir/home/state/rl44.check.sh"
+  [ -f "$check" ] || fail "fm-pr-check did not arm the merge poll: $out"
+
+  out=$(run_control "$dir" rl44 relaunch --note "address review"); rc=$?
+  expect_code 0 "$rc" "a relaunch of a lane with a recorded PR should succeed"$'\\n'"$out"
+  [ -n "$(meta_field "$dir" rl44 control_relaunch_tx)" ] || fail "the relaunch transaction id was not recorded"
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" bash "$check")
+  [ "$out" = merged ] || fail "the armed merge poll stopped accepting the relaunched record: '$out'"
+  pass "fm-control relaunch: a recorded PR stays valid to the armed merge poll"
 }
 
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
@@ -1380,6 +1478,28 @@ test_pi_exclude_tools_follow_the_relaunch() {
   assert_not_contains "$(cat "$dir/fake/literal")" "--exclude-tools" \
     "a relaunch without the file must launch with no exclusions"
   pass "fm-control relaunch: a Pi replacement keeps the home's tool exclusions"
+}
+
+test_claude_exclude_tools_follow_the_relaunch() {
+  local dir out rc id=rl-claude-excl
+  dir=$(new_case claude-exclude "$id")
+  add_ship_task "$dir" "$id" claude
+  printf claude > "$dir/fake/command"
+  printf claude > "$dir/fake/becomes"
+  mkdir -p "$dir/home/config"
+  printf '%s\n' '# hide unused schemas' 'Workflow' 'mcp__srv' > "$dir/home/config/crew-exclude-tools"
+  out=$(run_control "$dir" "$id" relaunch --note "keep exclusions"); rc=$?
+  expect_code 0 "$rc" "a Claude relaunch with exclusions should succeed"$'\n'"$out"
+  assert_contains "$(cat "$dir/fake/literal")" "--disallowedTools 'Workflow,mcp__srv' --append-system-prompt " \
+    "the relaunched Claude worker must keep the home's tool exclusions"
+  rm "$dir/home/config/crew-exclude-tools"
+  : > "$dir/fake/literal"
+  printf claude > "$dir/fake/command"
+  out=$(run_control "$dir" "$id" relaunch --note "exclusions removed"); rc=$?
+  expect_code 0 "$rc" "a Claude relaunch after the file is removed should succeed"$'\n'"$out"
+  assert_not_contains "$(cat "$dir/fake/literal")" "--disallowedTools" \
+    "a relaunch without the file must launch with no exclusions"
+  pass "fm-control relaunch: a Claude replacement keeps the home's tool exclusions"
 }
 
 test_exclude_tools_refusals_happen_before_the_agent_stops() {
@@ -3350,6 +3470,7 @@ test_relaunch_off_opencode_removes_tracked_wiring
 test_exit_and_relaunch_remove_the_dialog_file
 test_exit_removes_the_dialog_file_before_releasing_the_lock
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_relaunch_keeps_a_recorded_pr_valid_for_the_merge_poll
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree
@@ -3382,6 +3503,7 @@ test_account_list_relaunch_moves_only_on_explicit_account
 test_account_list_relaunch_refusals_happen_before_stop
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop
 test_pi_exclude_tools_follow_the_relaunch
+test_claude_exclude_tools_follow_the_relaunch
 test_exclude_tools_refusals_happen_before_the_agent_stops
 test_explicit_model_wins_over_the_recorded_one
 test_relaunch_onto_an_unverified_harness_is_refused
@@ -3447,3 +3569,4 @@ test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight
 test_away_branch_relaunch_accepts_existing_dispatchable_items
+test_relaunch_stops_processes_left_in_finished_validation_copies

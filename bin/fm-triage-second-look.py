@@ -23,7 +23,7 @@
 # classifier has already dropped, and the only thing it can print is a promotion.
 # There is no output that silences a line, so no answer it returns - and no text
 # a worker can write into a status line - can suppress an escalation Firstmate
-# would otherwise make. See docs/configuration.md "Status second look".
+# would otherwise make. See docs/fork-configuration.md "Status second look".
 #
 # Provider credentials, transport and model-specific calibration are shared in
 # fm_decision_model.py; docs/configuration.md "Decision models" owns setup.

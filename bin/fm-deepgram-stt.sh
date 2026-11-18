@@ -24,7 +24,7 @@
 # an empty list.
 #
 # Provider: `primary = deepgram` (the default), `primary = local` or
-# `primary = elevenlabs` in the home's private config/stt (docs/configuration.md
+# `primary = elevenlabs` in the home's private config/stt (docs/fork-configuration.md
 # owns the file). Local hands the file to bin/fm-stt-local.sh and needs no key;
 # ElevenLabs hands it to bin/fm-elevenlabs-stt.sh with the vocabulary's key
 # terms and needs ELEVENLABS_API_KEY (environment or the home's gitignored

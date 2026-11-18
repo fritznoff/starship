@@ -15,13 +15,12 @@ It shows the STARSHIP wordmark, three lamps for the crew, the owner's most urgen
 | --- | --- | --- |
 | `busy` | amber | Workers busy on a task, plus work the validation pipeline is carrying. |
 | `decisions for you` | red | Decisions held for the owner that wait on him now, not aged, deferred to a date, or waiting on other work; `decision for you` when there is one. |
-| `ready to merge` | green | PRs and ready branches waiting for the merge word, unless the task carries an open captain hold. |
+| `ready to merge` | green | PRs and ready branches waiting for the merge word, unless the task carries an open captain hold, plus the PRs a second mate has ready for it. |
 
 A lamp with nothing to count stays unlit, so the row keeps its shape.
 `decisions for you` and `ready to merge` are the owner's calls, the one count the [Factory pane](factory-pane.md) and the tap page also show; `fm_owner_calls` in `bin/fm-fleet-status-lib.sh` owns it.
 A worker's question, an ask-user review finding, a worker's pause, and an aged, deferred, or blocked hold are never counted there.
-The counts are the status bar's figures: `busy` is its `working` plus `checking`, and `decisions for you` plus `ready to merge` together are its `waiting for you`.
-[status-bar.md](status-bar.md#fleet-fields) owns what each figure means and how the reading is taken.
+The counts are the status bar's figures in the status bar's words, and the Factory pane's count line shows the same ones; [status-bar.md](status-bar.md#fleet-words) owns the words, what each figure means, and how the reading is taken.
 The strip reads that same cached reading, so it costs the fleet nothing extra.
 The strip redraws every 5 seconds, and within a second of the owner's calls changing.
 A decision answered, parked, released, closed or added changes no worker, so the owner's calls do not wait for the slow worker reading: whenever their change signal moves, they are read again on their own and the strip shows the next call within about two seconds.
@@ -49,18 +48,18 @@ The strip asks the terminal for mouse reports to see the click, so Herdr's own t
 
 A red `■ 1 failed, 2 stopped` shows before the battery when work failed or a worker stopped, so trouble shows without the owner looking for it.
 `failed` counts tasks whose current state is failed: a worker's failure or a failed validation run.
-`stopped` counts tasks whose worker is gone while their record remains, as the status bar's figure of the same name does, except that a failed task whose worker is gone counts as failed only, so each broken task counts once.
+`stopped` counts tasks whose worker is gone while their record remains, except that a failed task whose worker is gone counts as failed only, so each broken task counts once; the status bar's `failed` and `stopped` are the same two figures.
 It clears as soon as the reading no longer counts either.
 On a narrower pane it reads `■ 3 broken`.
 
-When the home listens to a Mothership room ([Mothership monitoring](configuration.md#mothership-monitoring-configmothership-monitor)) and the listener has not reached the room for two minutes, the alert says why: `Tailscale is off on this Mac` when Tailscale is installed and not running, or, on a Mac without Tailscale's command, when the room's name does not resolve; otherwise `The <room> room is not answering`, with the room's own name.
+When the home listens to a Mothership room ([Mothership monitoring](fork-configuration.md#mothership-monitoring-configmothership-monitor)) and the listener has not reached the room for two minutes, the alert says why: `Tailscale is off on this Mac` when Tailscale is installed and not running, or, on a Mac without Tailscale's command, when the room's name does not resolve; otherwise `The <room> room is not answering`, with the room's own name.
 The alert needs monitoring switched on for that room; a room with monitoring off raises no alert.
 It reads the note the listener keeps while the room cannot be reached, so it costs nothing extra, and it clears as soon as the room answers again, or when the listener has stopped trying for three minutes.
 On a narrower pane it reads `Tailscale off` or `room not answering`, after any `N broken`.
 
 ### The night shift
 
-When the home has a [night shift window](configuration.md#night-shift-window-confignight-shift-window), the strip says `night shift from 23:30` in the six hours before it starts and `night shift on` while it runs.
+When the home has a [night shift window](fork-configuration.md#night-shift-window-confignight-shift-window), the strip says `night shift from 23:30` in the six hours before it starts and `night shift on` while it runs.
 For six hours after it ends it says, in green, how much finished in it, such as `3 done overnight`.
 That counts each task once: one whose finished report arrived inside the window, which for a ship is its ready report, or whose PR was first seen merged inside it.
 Work that was cleaned up before the reading and left no merged PR record is not counted, so the figure can be short; when nothing was counted the morning shows no figure rather than a zero that might not be true.

@@ -10,8 +10,8 @@
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
 # Every scratch file this script mints (.main-eligible-rows.tmp.*,
-# .wake-rows.consume.*, .wake-queue.retire.*, .wake-queue.ack.*,
-# .wake-queue.actor-view.*) is created and removed under the queue lock, so one
+# .main-eligible-stamp.tmp.*, .wake-rows.consume.*, .wake-queue.retire.*,
+# .wake-queue.ack.*, .wake-queue.actor-view.*) is created and removed under the queue lock, so one
 # found while taking that lock was left by a drain that died mid-write; each
 # locked drain rotates such leftovers away before doing anything else.
 # FM_STATUS_PRESENTATION_LOCK_TIMEOUT sets the positive whole-second wait for
@@ -84,13 +84,16 @@ rows_file_valid() { fm_wake_grant_rows_valid "$1"; }
 # rotate_scratch_locked: remove scratch a dead drain left behind (header).
 rotate_scratch_locked() {
   local scratch
-  for scratch in "$STATE"/.main-eligible-rows.tmp.* "$STATE"/.wake-rows.consume.* \
+  for scratch in "$STATE"/.main-eligible-rows.tmp.* "$STATE"/.main-eligible-stamp.tmp.* "$STATE"/.wake-rows.consume.* \
     "$STATE"/.wake-queue.retire.* "$STATE"/.wake-queue.ack.* "$STATE"/.wake-queue.actor-view.*; do
     [ -e "$scratch" ] || [ -L "$scratch" ] || continue
     rm -f -- "$scratch"
   done
 }
 
+# Main reclaims stale grants. A branch drain uses the grant just published for
+# its turn, and its sandbox may not be able to inspect the host's PID via ps.
+# Reclaiming from that actor would delete its own snapshot before it can drain.
 reclaim_stale_branch_grant_locked() {
   [ -e "$ELIGIBLE_ROWS_FILE" ] || [ -L "$ELIGIBLE_ROWS_FILE" ] || return 0
   if ! fm_wake_branch_grant_live "$ELIGIBLE_ROWS_FILE" "$ELIGIBLE_OWNER_FILE"; then
@@ -851,7 +854,7 @@ else
 fi
 DRAIN_LOCK_HELD=true
 rotate_scratch_locked
-reclaim_stale_branch_grant_locked || exit 1
+[ "$ACTOR" = branch ] || reclaim_stale_branch_grant_locked || exit 1
 [ "$ACTOR" != main ] || retire_unconsumable_rows_locked
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
 
@@ -1089,6 +1092,10 @@ case "$RECOVERY_MARKER_TOKEN" in
   pending:*|announced:*|acked:*) ;;
   *) echo "wake drain: durable wakes have no recovery generation" >&2; exit 1 ;;
 esac
+if [ "$ACTOR" = main ]; then
+  fm_wake_main_presented_stamp "${RECOVERY_MARKER_TOKEN##*:}" \
+    || echo "wake drain: could not record which handling turn was shown these wakes; a re-arm may resurface them" >&2
+fi
 fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \

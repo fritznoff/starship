@@ -250,8 +250,11 @@ The first recovery marks that generation announced, and later empty-queue arms l
 A non-successor watcher start checks the durable queue and recovery marker under their locks.
 If an announced-but-unacknowledged episode has an empty queue, the arm leaves that generation announced, making repeated empty-queue arms idempotent while a long-poll source is merely alive.
 If a durable row arrived after the announcement, the arm opens a fresh pending downtime generation so buried work still resurfaces once.
-A non-successor watcher about to wake on a downtime episode first checks for something to recover: when the durable queue is empty and no task is in flight (`fm_supervision_status` in `bin/fm-supervision-lib.sh` owns that count), it retires the announced episode as acknowledged and keeps supervising instead of waking for a turn with nothing to do.
+A row main's drain already presented to the episode being handled, or one a live supervision-branch grant holds, is not buried work and never makes an arm recover; the branch presents its own (`fm_wake_main_recovery_count` in `bin/fm-wake-lib.sh`).
+Main's drain records, in `state/.main-eligible-stamp`, the recovery generation it named and the session it presented to (the `state/.lock` owner pid and the session id in `state/.lock-session`, which a `/clear` re-keys while keeping the pid); a presented row counts as handled only while the marker still carries that generation (including the `pending:downtime` a handling successor's exit republishes) and the same live session holds the lock, so a new generation, a new or dead session, or any row never presented still resurfaces, and the next main drain re-presents every unacknowledged row.
+A non-successor watcher about to wake on a downtime episode first checks for something to recover: when no queued row is main's to see (none, or only rows a live supervision-branch grant holds or the running handling turn was already shown) and, with the queue empty, no task is in flight (`fm_supervision_status` in `bin/fm-supervision-lib.sh` owns that count), it retires the announced episode as acknowledged and keeps supervising instead of waking for a turn with nothing to do.
 The retirement re-reads the queue under the queue and marker locks, so a row appended after that check opens a fresh generation that still wakes; anything else that stops the retirement falls back to the wake.
+A recovery wake names the newest queued row the recovery acts on (never a branch-held row or one the running handling turn was already shown), preferring a real event over a bare heartbeat, as `check: queued wake: <reason>`, so a row another producer appended, or one a handling successor queued while no arm was attached to deliver its close, reaches the supervisor as that event while still routing to main like every recovery; only a recovery with nothing usable queued, a genuine outage with work in flight, reads `check: rearm-resurface` (`recovery_wake` in `bin/fm-watch.sh`).
 A Codex foreground checkpoint skips the announced-episode reopen transition, so an already-announced generation stays announced while the checkpoint continues its bounded supervision.
 Its ordinary arm check still announces a never-announced generation, including one made pending by a durable queue append during the checkpoint.
 
@@ -304,6 +307,7 @@ Every presented row is claimed to exactly one actor under the durable queue lock
   Publication is refused if main already claimed any requested row.
   Activation, publication, release, and deactivation exit nonzero if queue-lock acquisition fails, preserving both grant records and leaving another owner's lock intact.
 - A main drain validates that owner evidence under the queue lock and reclaims the grant when its process is gone or its identity no longer matches.
+  A branch drain never reclaims: it drains the grant just published for its turn, and its sandbox may be unable to inspect the host pid.
 - A main drain claims every currently unclaimed row and excludes an active branch grant from both presentation and acknowledgement.
 
 ### Lock deadlines during presentation
@@ -493,7 +497,7 @@ tmux crewmates do not inherit the primary's `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSU
 `bin/backends/tmux.sh` creates the worker with `tmux new-window` and then send-keys, so the pane environment comes from the tmux server, not from the primary process.
 This home runs herdr, not tmux, and the herdr spawn path was not live-tested for this variable.
 From spawn code, `bin/fm-spawn.sh` does not put this variable on the herdr launch line and does not unset it.
-The Claude worker launch prefix sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000` and `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` (see `docs/configuration.md` "Context window").
+The Claude worker launch prefix sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000` and `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` (see `docs/fork-configuration.md` "Context window").
 A herdr worker pane otherwise inherits the launching environment for `FM_HERDR_PROJECT_*`, which is why spawn pins or clears those two variables, but that is not evidence for this pressure-reap export.
 Whether a herdr crewmate receives the export is therefore untested.
 A Claude secondmate runs its own supervision cycle, so its watcher arm is a tracked background shell of an interactive Claude session and is reapable exactly as the primary's was.
@@ -535,7 +539,11 @@ It still fails the arm and still warns that the host alarm is unavailable, and b
 An explicit `enable` bypasses the cooldown for one real attempt; only a verified registration clears the record, so a failed `enable` preserves the evidence and its escalating count rather than resetting to a first failure.
 The arm path and the session-start banner both read that record through one shared helper (`fm_supervision_arm_failure_status` in `bin/fm-supervision-lib.sh`), which treats a deadline beyond its own recorded window as stale evidence suppressing nothing, so a clock rollback or a restored state volume neither blocks retries forever nor advertises a suppression window that is not enforced.
 The in-harness turn-end and continuity guards keep blocking a blind turn end throughout, so a suppressed host registration degrades the backstop rather than removing it.
-The check reuses `fm_supervision_status` plus `fm_watcher_healthy`, so it requires the existing home-scoped watcher lock, PID identity, watcher path, and fresh beacon rather than trusting a leftover file or live PID alone.
+The check reuses `fm_supervision_status` plus the model-aware `fm_watcher_supervision_verdict` the in-session pull and continuity guards use, so a normal hand-over gap between watcher cycles - a fresh beacon with no watcher holding the lock on a Claude, Cursor or agy primary - is not an outage, while a watcher still missing once the beacon passes the grace is.
+The host check does not take that verdict's mid-turn exemption for a stale beacon (`fm_autoarm_midturn_healthy`): only the in-session guard runs while the primary is provably in a turn, and from launchd an unhandled rewake ledger beside an idle live primary would otherwise hide a real outage indefinitely.
+Because it runs from launchd outside the harness tree, the model is the inspected home's, resolved by `fm_home_supervision_model` from the live harness holding the session lock; with no such holder the model is unknown and the check keeps the strict `fm_watcher_healthy` requirement of the existing home-scoped watcher lock, PID identity, watcher path, and fresh beacon rather than trusting a leftover file or live PID alone.
+The hand-over-aware verdict covers the harnesses that helper classifies: Claude, Cursor and agy as `autoarm`, and Pi, signed Pi and omp as `extension`; every other live harness resolves to `persistent` and keeps the strict check.
+A native Codex Stop-hook park still gets the strict check, and so can still alarm in a hand-over gap, until such a park can be detected from outside the session.
 Lock home and watcher path are compared by physical target, so a checkout reached through a symlinked path component cannot make a live watcher look foreign to a host check that resolved its own root differently; two genuinely different homes still never match.
 Future-dated beacon timestamps are rejected rather than remaining fresh indefinitely after wall-clock rollback or restore.
 With the default 300-second grace, a stale-beacon outage becomes an active alert within at most roughly 360 seconds instead of remaining silent for hours.
@@ -567,7 +575,7 @@ The launchd transport and the real banner it posts are covered by opt-in real-`l
 
 ## Add-on watcher hooks
 
-A watcher hook of the home's private add-on ([configuration](configuration.md#private-add-on-configaddon)) is sourced once when `bin/fm-watch.sh` starts, and hook W1 there owns the two guarded functions such a hook may define.
+A watcher hook of the home's private add-on ([configuration](fork-configuration.md#private-add-on-configaddon)) is sourced once when `bin/fm-watch.sh` starts, and hook W1 there owns the two guarded functions such a hook may define.
 `fm_fork_glasses_file_event_catch_up` runs at the top of every watcher loop before the slow-check cadence test, and `fm_fork_event_wait_or_sleep` replaces the watcher's terminal wait.
 Both are reached through guarded calls, so a home with no such hook runs the watcher's own `event_wait_or_sleep` and its ordinary check cadence.
 A hook runs inside the existing singleton watcher cycle and does not add another watcher, change lock ownership, or alter the one-actionable-reason exit contract.
@@ -639,6 +647,7 @@ They also prove that a legacy or handoff-phase watcher marker from an absent rep
 - A handling successor that must surface a real crew event instead of going blind.
 - Captain input queued after a cycle started, surfaced under its own reason by a handling successor and by a cycle whose episode is being handled.
 - A handling successor that resurfaces a row appended between its predecessor's close and its own startup handoff.
+- A recovery wake that names its queued row, a turn-end cycle that delivers an unattended handling successor's recorded reason, no wake for rows a live branch grant holds or rows already presented to the turn handling them, and a genuine outage that still resurfaces once.
 
 `tests/fm-watch-triage.test.sh` proves TERM stops a watcher blocked inside a poll's pane capture and still releases its lock and records an acknowledgeable stop.
 It also exercises a single TERM with a live foreign downtime-marker lock holder, retained stale singleton and subsequent arm-style recovery, including decimal `08` and zero `00` cleanup bounds.
@@ -652,7 +661,7 @@ It checks that a newly appended keyed decision is classified without rereading e
 - Recovery publication before stale-lock removal.
 - The typed self-eviction failure.
 - Bounded and successor-linked lifecycle rows.
-- Startup-stop resilience: slow post-claim confirmation, typed startup-lock and identity-publication failures, safe-point deadline and signal forwarding, and cleanup of published locks and in-flight staging while preserving foreign owners.
+- Startup-stop resilience: slow post-claim confirmation, typed startup-lock and identity-publication failures, safe-point deadline and signal forwarding, cleanup of published locks and in-flight staging while preserving foreign owners, and a TERM during lock creation whose cleanup never joins an unrelated child (also run under stock `/bin/bash` 3.2 in CI's stock macOS Bash lane).
 - A SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 
 ### Claude auto-arm and turn-end guard
@@ -678,7 +687,7 @@ It checks that a newly appended keyed decision is classified without rereading e
 - The [session-bound HUP/TERM/INT failure handoff](turnend-guard.md#failure-progression-and-block-budget) and replacement-session notice isolation.
 - A captain note queued mid-turn, with the real arm and watcher, presented through a rewake at that turn's end.
 
-It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim.
+It also covers generation-claim single-flight, stuck-claim and earlier-session supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim.
 [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.
 
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh`:

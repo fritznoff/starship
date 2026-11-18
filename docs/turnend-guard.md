@@ -269,7 +269,7 @@ Each enabled primary harness adapts its own turn-end mechanism to the shared gua
 The registrations in detail:
 
 - Claude registers two `Stop` hooks in `.claude/settings.json`, both anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, and `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
-  A third `Stop` entry, `bin/fm-claude-reply-speak.sh` with `async: true`, is not part of the guard: it speaks the primary's final reply through desk voice-out when that turn spoke nothing, runs only in the lock-holding plain primary checkout, and never blocks (docs/configuration.md "Desk voice-out").
+  A third `Stop` entry, `bin/fm-claude-reply-speak.sh` with `async: true`, is not part of the guard: it speaks the primary's final reply through desk voice-out when that turn spoke nothing, runs only in the lock-holding plain primary checkout, and never blocks (docs/fork-configuration.md "Desk voice-out").
   A fourth `Stop` entry, `bin/fm-host-mirror.sh hook claude`, is not part of the guard either: it records the turn for the supervision host's [dialog mirror](supervision-host.md#the-dialog-mirror).
   The auto-arm also handles `StopFailure`, without this guard; [watcher continuity](watcher-continuity.md#claude-stop-hook) owns error-ended turn coverage.
   In a Claude secondmate home, `bin/fm-spawn.sh` writes a `.fm-busy-stop` pointer and gives the mate no `Stop` busy hook, so `--claude` is the only Stop writer of the parent home's busy record for that generation.
@@ -367,8 +367,12 @@ Pinning that signal to the session-lock identity recorded at claim time is what 
 An orphan fails both signals: it no longer descends from the replacement's lock pid, and its recorded lock-holder identity is the dead session's.
 An entry from a build before these fields existed records neither and falls back to descent alone.
 
+The auto-arm also records the Stop payload's `session_id` on line 1 as `claude_session`, which later writes of that generation keep, and a firing from another Claude session does not find that claim open.
+Claude delivers a hook's exit-2 rewake to the session that launched the hook, so a claim taken before Claude continued the conversation under a new session id, as a backgrounded session's `--fork-session` resume does, can only wake a conversation that no longer runs, even while its owner still descends from the lock-holding front end.
+A claim or a payload with no session id is judged as before, and so is every check the guard itself makes, because it names no session.
+
 Anything else lets the next Stop-owned firing take the next generation and arm.
-That covers a finished outcome, a dead or identity-mismatched owner, an owner orphaned by its session's exit, a stuck owner, an identityless entry, or no entry.
+That covers a finished outcome, a dead or identity-mismatched owner, an owner orphaned by its session's exit, a stuck owner, an identityless entry, an earlier session's claim, or no entry.
 Taking a newer generation is the reclaim, and a steady-state predecessor is never signalled or revoked.
 
 No mutex is held across arming or output.

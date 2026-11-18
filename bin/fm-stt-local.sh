@@ -12,7 +12,7 @@
 # rewrites are not applied here; bin/fm-deepgram-stt.sh applies them when the
 # local engine is the primary provider.
 #
-# Settings, from the home's private config/stt (docs/configuration.md owns
+# Settings, from the home's private config/stt (docs/fork-configuration.md owns
 # the file):
 #   local_url    default http://127.0.0.1:8765/v1/audio/transcriptions
 #   local_model  default mlx-community/parakeet-tdt-0.6b-v3

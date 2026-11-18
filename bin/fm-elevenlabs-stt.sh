@@ -12,7 +12,7 @@
 # Posts the file to https://api.elevenlabs.io/v1/speech-to-text as multipart
 # form data and prints the transcript text on stdout (or the raw JSON answer,
 # whose `text` field holds the transcript, with --json). The model is
-# `elevenlabs_model` in the home's private config/stt (docs/configuration.md
+# `elevenlabs_model` in the home's private config/stt (docs/fork-configuration.md
 # owns the file), default scribe_v2; the language is detected automatically.
 # Audio events such as (laughter) are not tagged.
 #

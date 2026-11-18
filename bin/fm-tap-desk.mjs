@@ -168,6 +168,23 @@ function identitySync(ctx, id) {
   return identityResult(runSync(ctx, captainHold(ctx), ["open", id, "--identity", "--distinguish-absent"]));
 }
 
+// Every named call's identity from one `open-each`, keyed by id; a failed
+// listing leaves each id that read's own error.
+async function identitiesOf(ctx, ids) {
+  const opened = new Map();
+  if (ids.length === 0) return opened;
+  const result = await runAsync(ctx, captainHold(ctx), ["open-each", ...ids]);
+  for (const line of result.status === 0 ? result.stdout.split("\n") : []) {
+    const [id, status, text = ""] = line.split("\t");
+    if (!id || !/^\d+$/.test(status || "")) continue;
+    const code = Number(status);
+    opened.set(id, identityResult({ status: code, stdout: code === 0 ? text : "", stderr: code === 0 ? "" : text }));
+  }
+  const failed = { error: lastLine(result.stderr) || `exit ${result.status}` };
+  for (const id of ids) if (!opened.has(id)) opened.set(id, failed);
+  return opened;
+}
+
 function heldSince(identity, created) {
   const stamp = String(identity || "").split("#")[0];
   const value = stamp || created || "";
@@ -348,9 +365,13 @@ async function rulesGuarded(ctx, project) {
 function ownerCalls(ctx) {
   const result = runSync(ctx, "bash", ["-c", '. "$0" && fm_owner_calls "$1"', path.join(ctx.root, "bin/fm-fleet-status-lib.sh"), ctx.state]);
   if (result.status !== 0) fail(`could not read what waits on the owner: ${lastLine(result.stderr) || `exit ${result.status}`}`);
-  const calls = { decisions: [], merges: [] };
+  const calls = { decisions: [], merges: [], mateMerges: [] };
   for (const line of result.stdout.split("\n")) {
-    const [kind, id] = line.split("\t");
+    const [kind, id, child, url] = line.split("\t");
+    if (kind === "mate-merge" && id && child && url) {
+      calls.mateMerges.push({ id: `${id}:${child}`, reason: `${url} is ready on second mate ${id}; Starship merges it on your word` });
+      continue;
+    }
     if (!id || !SLUG.test(id)) continue;
     if (kind === "decision") calls.decisions.push(id);
     else if (kind === "merge") calls.merges.push(id);
@@ -363,13 +384,15 @@ function ownerCalls(ctx) {
 // the page cards; shapes passes the ids it was asked for.
 async function loadDecisions(ctx, ids) {
   const notShown = [];
-  const rows = await pool(ids, 8, async (id) => {
-    const [shown, opened] = await Promise.all([
-      runAsync(ctx, tasksAxi(ctx), ["show", id, "--full"]),
-      runAsync(ctx, captainHold(ctx), ["open", id, "--identity", "--distinguish-absent"]),
-    ]);
+  // One captain-hold process reads every identity, beside the task reads.
+  const [opens, shows] = await Promise.all([
+    identitiesOf(ctx, ids),
+    pool(ids, 8, (id) => runAsync(ctx, tasksAxi(ctx), ["show", id, "--full"])),
+  ]);
+  const rows = ids.map((id, index) => {
+    const shown = shows[index];
     const task = shown.status === 0 ? readShow(shown.stdout) : null;
-    const open = identityResult(opened);
+    const open = opens.get(id);
     if (!task) return { id, error: "could not be read" };
     if (task.hold_kind !== "captain") return null;
     if (open.error) return { id, error: `could not tell whether it is still waiting: ${open.error}` };
@@ -505,7 +528,9 @@ async function commandExport(args) {
   const decisionCards = decisions.decisions
     .map((row) => decisionCard(row, ledger, now, days, ownerOnly))
     .sort((left, right) => (left.held_since || "").localeCompare(right.held_since || "") || left.id.localeCompare(right.id));
-  const notShown = [...merges.notShown, ...decisions.notShown];
+  // A second mate's PR is one of the owner's calls, but its job is not this home's
+  // own, so it has no tap card here; it is named under not_shown instead.
+  const notShown = [...merges.notShown, ...decisions.notShown, ...calls.mateMerges];
   const cards = {
     schema: CARDS_SCHEMA,
     generated_at: new Date(now).toISOString(),

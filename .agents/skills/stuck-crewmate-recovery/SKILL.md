@@ -12,6 +12,8 @@ metadata:
 Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
 A stale or dead-endpoint report for a worker whose pull request has already landed is not a recovery case: the work is finished, so close the task through ordinary teardown (`AGENTS.md` section 7 for firstmate, the landed-work rule in `bin/fm-branch-prompt.sh` for the supervision branch) instead of this playbook, never with `--force`.
 
+A lane parked on review (`bin/fm-crew-state.sh` reads `source: review-park`) stopped its agent on purpose and is not a recovery case; relaunch it only through `bin/fm-park.sh resume`.
+
 Follow the crew-hosted Lavish board contract in [`docs/configuration.md`](../../../docs/configuration.md#crew-hosted-lavish-review-boards) when recovering a worker that hosts a board.
 
 Interrupt, stop, and relaunch a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
@@ -30,6 +32,7 @@ A `backend=t3code` worker already runs at T3's `full-access` runtime mode, so th
 
 This procedure covers ordinary `kind=ship` and `kind=scout` direct reports.
 Load `secondmate-provisioning` instead for `kind=secondmate` recovery.
+A direct-line second mate that `bin/fm-direct-line.sh talking <id>` reports as talking with the captain is not stuck: leave it alone and never nudge, interrupt, or relaunch it until that lapses or the captain asks ([`docs/direct-line.md`](../../../docs/direct-line.md)).
 
 For a REMOTE secondmate, `fm-crew-state` and `fm-peek` read the actual remote endpoint over `fm-on.sh`, and `fm-send` reports a delivered-with-pending-confirmation steer as delivered (their headers own the contracts); an `unknown-remote` read or unreachable-host failure means the remote state could not be read, never that the mate is dead or the send failed.
 Recover a genuinely stuck remote mate only through `bin/fm-spawn.sh <id> --secondmate`, never raw herdr pane close/kill surgery, which strands the endpoint binding.
